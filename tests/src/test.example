@@ -1,0 +1,4 @@
+
+num = 2
+print(num + 4)
+print("hi mommy")
