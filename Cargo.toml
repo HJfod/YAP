@@ -1,12 +1,11 @@
 [package]
-name = "yap"
-description = "Yet Another Parser"
+name = "prolangine"
+description = "Programming Language Engine"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-colored = "2.1.0"
-line-col = "0.2.1"
-once_cell = "1.19.0"
-strum = { version = "0.26.2", features = ["derive"] }
-unicode-xid = "0.2.4"
+colored = "2.1"
+line-col = "0.2"
+strum = { version = "0.26", features = ["derive"] }
+unicode-xid = "0.2"

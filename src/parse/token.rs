@@ -1,6 +1,7 @@
+use crate::lang::Language;
 use crate::src::{Span, Src, SrcCursor};
 use std::fmt::Debug;
-use std::{fmt::Display, marker::PhantomData};
+use std::fmt::Display;
 
 use super::common::skip_c_like_comments;
 
@@ -14,66 +15,62 @@ use super::common::skip_c_like_comments;
 /// token type must be able to encode an optional name for the EOF (such as
 /// "closing brace"), since EOF does not necessarily mean end-of-file but can
 /// also mean end-of-subtree
-pub trait TokenKind<'s>: Debug + Sized {
+pub trait TokenKind<'s, L: Language>: Debug + Sized {
     /// Get the display name for this token
     fn display_name(&self) -> String;
 
     /// Get the next token in the source iterator. This method is **not required**
     /// to run [`TokenKind::skip_to_next`]; it may assume that the next token
     /// starts where the cursor is currently pointing at
-    fn next(cursor: &mut SrcCursor<'s>) -> Token<'s, Self>;
+    fn next(cursor: &mut SrcCursor<'s, L>) -> Token<'s, L>;
 
     /// Skip to the next token; by default skips whitespace and C-like comments
     /// (`// line comment` and `/* block comment */`)
-    fn skip_to_next(cursor: &mut SrcCursor) {
+    fn skip_to_next(cursor: &mut SrcCursor<'s, L>) {
         skip_c_like_comments(cursor);
     }
 }
 
 #[derive(Debug)]
-pub enum ParsedTokenKind<'s, T: TokenKind<'s>> {
-    Token(T, PhantomData<&'s ()>),
+pub enum ParsedTokenKind<'s, L: Language> {
+    Token(L::TokenKind<'s>),
     EOF(Option<String>),
     Error(String),
 }
 
 #[derive(Debug)]
-pub struct Token<'s, T: TokenKind<'s>> {
-    kind: ParsedTokenKind<'s, T>,
-    raw: &'s str,
-    span: Span<'s>,
+pub struct Token<'s, L: Language> {
+    kind: ParsedTokenKind<'s, L>,
+    span: Span<'s, L>,
 }
 
-impl<'s, T: TokenKind<'s>> Token<'s, T> {
-    pub fn new(kind: T, span: Span<'s>) -> Self {
+impl<'s, L: Language> Token<'s, L> {
+    pub fn new(kind: L::TokenKind<'s>, span: Span<'s, L>) -> Self {
         Self {
-            kind: ParsedTokenKind::Token(kind, PhantomData),
-            raw: span.data(),
+            kind: ParsedTokenKind::Token(kind),
             span,
         }
     }
-    pub fn new_eof(name: Option<&str>, span: Span<'s>) -> Self {
+    pub fn new_eof(name: Option<&str>, span: Span<'s, L>) -> Self {
         Self {
             kind: ParsedTokenKind::EOF(name.map(|n| n.into())),
-            raw: span.data(),
             span,
         }
     }
-    pub fn new_error(msg: &str, span: Span<'s>) -> Self {
+    pub fn new_error(msg: &str, span: Span<'s, L>) -> Self {
         Self {
             kind: ParsedTokenKind::Error(msg.into()),
-            raw: span.data(),
             span,
         }
     }
 
-    pub fn kind(&self) -> &ParsedTokenKind<'s, T> {
+    pub fn kind(&self) -> &ParsedTokenKind<'s, L> {
         &self.kind
     }
-    pub fn raw(&self) -> &'s str {
-        self.raw
+    pub fn into_kind(self) -> ParsedTokenKind<'s, L> {
+        self.kind
     }
-    pub fn span(&self) -> Span<'s> {
+    pub fn span(&self) -> Span<'s, L> {
         self.span.clone()
     }
 
@@ -102,10 +99,10 @@ impl<'s, T: TokenKind<'s>> Token<'s, T> {
     }
 }
 
-impl<'s, T: TokenKind<'s>> Display for Token<'s, T> {
+impl<'s, L: Language> Display for Token<'s, L> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self.kind {
-            ParsedTokenKind::Token(t, _) => f.write_str(&t.display_name()),
+            ParsedTokenKind::Token(t) => f.write_str(&t.display_name()),
             ParsedTokenKind::EOF(name) => {
                 f.write_str(name.as_ref().map(|n| n.as_str()).unwrap_or("end-of-file"))
             }
@@ -114,66 +111,52 @@ impl<'s, T: TokenKind<'s>> Display for Token<'s, T> {
     }
 }
 
-pub fn parse_fully_into_tokens<'s, T>(src: &'s Src) -> Vec<Token<'s, T>>
-where
-    T: TokenKind<'s>,
-{
-    let mut tokenizer = Tokenizer::<T>::new(src);
-    let mut res = Vec::new();
-    loop {
-        let token = tokenizer.next();
-        if token.is_eof() {
-            break;
-        }
-        res.push(token);
-    }
-    res
-}
-
 /// Anything that can return Tokens should impl TokenIterator; which is not an
 /// Iterator because it can never return None
-pub(crate) trait TokenIterator<'s, T: TokenKind<'s>> {
-    fn next(&mut self) -> Token<'s, T>;
+pub(crate) trait TokenIterator<'s, L: Language> {
+    fn next(&mut self) -> Token<'s, L>;
 }
 
 /// Turns an unparsed source file into tokens
-pub(crate) struct Tokenizer<'s, T: TokenKind<'s>> {
-    cursor: SrcCursor<'s>,
-    _phantom: PhantomData<T>,
+pub(crate) struct Tokenizer<'s, L: Language> {
+    cursor: SrcCursor<'s, L>,
 }
-impl<'s, T: TokenKind<'s>> Tokenizer<'s, T> {
-    pub fn new(src: &'s Src) -> Self {
+impl<'s, L: Language> Tokenizer<'s, L> {
+    pub fn new(src: &'s Src<L>) -> Self {
         Self {
             cursor: src.cursor(),
-            _phantom: PhantomData,
         }
     }
 }
-impl<'s, T: TokenKind<'s>> TokenIterator<'s, T> for Tokenizer<'s, T> {
-    fn next(&mut self) -> Token<'s, T> {
-        T::skip_to_next(&mut self.cursor);
-        T::next(&mut self.cursor)
+impl<'s, L: Language> TokenIterator<'s, L> for Tokenizer<'s, L> {
+    fn next(&mut self) -> Token<'s, L> {
+        L::TokenKind::skip_to_next(&mut self.cursor);
+        L::TokenKind::next(&mut self.cursor)
     }
 }
 
 #[derive(Debug)]
 /// A list of pre-parsed tokens
-pub struct TokenTree<'s, T: TokenKind<'s>> {
-    tokens: std::vec::IntoIter<Token<'s, T>>,
-    eof_span: Span<'s>,
+pub struct TokenTree<'s, L: Language> {
+    tokens: std::vec::IntoIter<Token<'s, L>>,
+    eof_span: Span<'s, L>,
 }
 
-impl<'s, T: TokenKind<'s>> TokenTree<'s, T> {
-    pub fn new(tokens: Vec<Token<'s, T>>, eof_span: Span<'s>) -> Self {
+impl<'s, L: Language> TokenTree<'s, L> {
+    pub fn new(tokens: Vec<Token<'s, L>>, eof_span: Span<'s, L>) -> Self {
         Self {
             tokens: tokens.into_iter(),
             eof_span,
         }
     }
+    /// Consumes this tree and turns it into a vector of its contents
+    pub fn into_items(self) -> Vec<Token<'s, L>> {
+        self.tokens.collect()
+    }
 }
 
-impl<'s, T: TokenKind<'s>> TokenIterator<'s, T> for TokenTree<'s, T> {
-    fn next(&mut self) -> Token<'s, T> {
+impl<'s, L: Language> TokenIterator<'s, L> for TokenTree<'s, L> {
+    fn next(&mut self) -> Token<'s, L> {
         self.tokens
             .next()
             .unwrap_or(Token::new_eof(None, self.eof_span.clone()))

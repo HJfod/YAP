@@ -1,6 +1,5 @@
 use colored::{Color, Colorize};
 use line_col::LineColLookup;
-use once_cell::sync::Lazy;
 use std::{
     cmp::max,
     ffi::OsStr,
@@ -12,7 +11,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::lang::Language;
+use crate::{lang::Language, parse::token::{Token, TokenIterator, Tokenizer}};
 
 pub enum Underline {
     /// Error squiggle
@@ -39,11 +38,11 @@ impl Underline {
 }
 
 #[derive(Debug)]
-pub struct Span<'s>(pub &'s Src, pub Range<usize>);
+pub struct Span<'s, L: Language>(pub &'s Src<L>, pub Range<usize>);
 
-impl<'s> Span<'s> {
+impl<'s, L: Language> Span<'s, L> {
     pub fn builtin() -> Self {
-        Self(Src::builtin(), 0..0)
+        Self(Src::<L>::builtin(), 0..0)
     }
     pub fn data(&self) -> &'s str {
         &self.0.data()[self.1.clone()]
@@ -107,12 +106,12 @@ impl<'s> Span<'s> {
     }
 }
 
-impl Clone for Span<'_> {
+impl<L: Language> Clone for Span<'_, L> {
     fn clone(&self) -> Self {
         Self(self.0, self.1.clone())
     }
 }
-impl Display for Span<'_> {
+impl<L: Language> Display for Span<'_, L> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let lookup = LineColLookup::new(self.0.data());
         let start = lookup.get(self.1.start);
@@ -136,27 +135,23 @@ impl Display for Span<'_> {
 
 /// A source file of code. Not necessarily a file, can also be an in-memory
 /// stream
-pub enum Src {
+pub enum Src<L: Language> {
+    Builtin(PhantomData<L>),
     Memory { name: String, data: String },
     File { path: PathBuf, data: String },
 }
 
-static BUILTIN_SRC: Lazy<Src> = Lazy::new(|| Src::Memory {
-    name: String::from("<compiler built-in>"),
-    data: String::from(""),
-});
-
-impl Src {
-    pub fn builtin() -> &'static Src {
-        &BUILTIN_SRC
+impl<L: Language> Src<L> {
+    pub fn builtin() -> &'static Self {
+        &Src::Builtin(PhantomData)
     }
-    pub fn from_memory<S: Into<String>, D: Into<String>>(name: S, data: D) -> Result<Src, String> {
-        Ok(Src::Memory {
+    pub fn from_memory<S: Into<String>, D: Into<String>>(name: S, data: D) -> Self {
+        Src::Memory {
             name: name.into(),
             data: data.into(),
-        })
+        }
     }
-    pub fn from_file(path: &Path) -> Result<Src, String> {
+    pub fn from_file(path: &Path) -> Result<Self, String> {
         Ok(Src::File {
             data: fs::read_to_string(path).map_err(|e| format!("Can't read file: {}", e))?,
             path: path.to_path_buf(),
@@ -164,38 +159,56 @@ impl Src {
     }
     pub fn name(&self) -> String {
         match self {
+            Src::Builtin(_) => String::from("<compiler built-in>"),
             Src::Memory { name, data: _ } => name.clone(),
             Src::File { path, data: _ } => path.to_string_lossy().to_string(),
         }
     }
     pub fn data(&self) -> &str {
         match self {
+            Src::Builtin(_) => "",
             Src::Memory { name: _, data } => data.as_str(),
             Src::File { path: _, data } => data.as_str(),
         }
     }
-    pub fn cursor(&self) -> SrcCursor {
+    pub fn cursor(&self) -> SrcCursor<'_, L> {
         SrcCursor(self, 0)
+    }
+
+    /// Tokenize this source file according to the Language's token type
+    pub fn tokenize(&self) -> Vec<Token<'_, L>> {
+        let mut tokenizer = Tokenizer::new(self);
+        let mut res = Vec::new();
+        loop {
+            let token = tokenizer.next();
+            if token.is_eof() {
+                break;
+            }
+            res.push(token);
+        }
+        res
     }
 }
 
-impl Debug for Src {
+impl<L: Language> Debug for Src<L> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Builtin(_) => f.write_str("Builtin"),
             Self::Memory { name, data: _ } => f.write_fmt(format_args!("Memory({name:?})")),
             Self::File { path, data: _ } => f.write_fmt(format_args!("File({path:?})")),
         }
     }
 }
-impl Display for Src {
+impl<L: Language> Display for Src<L> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.name())
     }
 }
 
-impl PartialEq for Src {
+impl<L: Language> PartialEq for Src<L> {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
+            (Src::Builtin(_), Src::Builtin(_)) => true,
             (Src::Memory { name: a, data: ad }, Src::Memory { name: b, data: bd }) => {
                 a == b && ad == bd
             }
@@ -204,21 +217,22 @@ impl PartialEq for Src {
         }
     }
 }
-impl Eq for Src {}
-impl Hash for Src {
+impl<L: Language> Eq for Src<L> {}
+impl<L: Language> Hash for Src<L> {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         match self {
-            Src::Memory { name, data } => {
+            Self::Builtin(_) => 0.hash(state),
+            Self::Memory { name, data } => {
                 name.hash(state);
                 data.hash(state);
             }
-            Src::File { path, data: _ } => path.hash(state),
+            Self::File { path, data: _ } => path.hash(state),
         }
     }
 }
 
-pub struct SrcCursor<'s>(&'s Src, usize);
-impl<'s> SrcCursor<'s> {
+pub struct SrcCursor<'s, L: Language>(&'s Src<L>, usize);
+impl<'s, L: Language> SrcCursor<'s, L> {
     pub fn peek(&self) -> Option<char> {
         self.0.data()[self.1..].chars().next()
     }
@@ -249,17 +263,17 @@ impl<'s> SrcCursor<'s> {
             None
         }
     }
-    pub fn src(&self) -> &'s Src {
+    pub fn src(&self) -> &'s Src<L> {
         self.0
     }
     pub fn pos(&self) -> usize {
         self.1
     }
-    pub fn span_from(&self, start: usize) -> Span<'s> {
+    pub fn span_from(&self, start: usize) -> Span<'s, L> {
         Span(self.0, start..self.1)
     }
 }
-impl<'s> Iterator for SrcCursor<'s> {
+impl<'s, L: Language> Iterator for SrcCursor<'s, L> {
     type Item = char;
     fn next(&mut self) -> Option<Self::Item> {
         self.0.data()[self.1..]
@@ -277,8 +291,7 @@ where
     L: Language,
 {
     path: PathBuf,
-    srcs: Vec<Src>,
-    _phantom: PhantomData<L>,
+    srcs: Vec<Src<L>>,
 }
 
 impl<L: Language> Codebase<L> {
@@ -289,7 +302,6 @@ impl<L: Language> Codebase<L> {
             return Ok(Codebase {
                 path: path.to_path_buf(),
                 srcs: vec![Src::from_file(path)?],
-                _phantom: PhantomData,
             });
         }
         if !path.exists() {
@@ -303,11 +315,10 @@ impl<L: Language> Codebase<L> {
             Ok(Codebase {
                 path: path.to_path_buf(),
                 srcs,
-                _phantom: PhantomData,
             })
         }
     }
-    fn find_src_files(dir: &Path) -> Result<Vec<Src>, String> {
+    fn find_src_files(dir: &Path) -> Result<Vec<Src<L>>, String> {
         let Ok(files) = std::fs::read_dir(dir)
         else {
             return Ok(vec![]);
@@ -334,14 +345,14 @@ impl<L: Language> Codebase<L> {
     pub fn path(&self) -> &Path {
         &self.path
     }
-    pub fn iter(&self) -> impl Iterator<Item = &Src> {
+    pub fn iter(&self) -> impl Iterator<Item = &Src<L>> {
         self.into_iter()
     }
 }
 
 impl<'a, L: Language> IntoIterator for &'a Codebase<L> {
-    type IntoIter = <&'a Vec<Src> as IntoIterator>::IntoIter;
-    type Item = &'a Src;
+    type IntoIter = <&'a Vec<Src<L>> as IntoIterator>::IntoIter;
+    type Item = &'a Src<L>;
     fn into_iter(self) -> Self::IntoIter {
         self.srcs.iter()
     }
