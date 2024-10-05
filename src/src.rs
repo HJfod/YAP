@@ -133,6 +133,20 @@ impl<L: Language> Display for Span<'_, L> {
     }
 }
 
+pub fn overall_span<'s, L: Language, S: IntoIterator<Item = Span<'s, L>>>(spans: S) -> Option<Span<'s, L>> {
+    let mut items = spans.into_iter();
+    let mut span = items.next()?;
+    for Span(_, range) in items {
+        if range.start < span.1.start {
+            span.1.start = range.start;
+        }
+        if range.end > span.1.end {
+            span.1.end = range.end;
+        }
+    }
+    Some(span)
+}
+
 /// A source file of code. Not necessarily a file, can also be an in-memory
 /// stream
 pub enum Src<L: Language> {
