@@ -38,6 +38,7 @@ impl Underline {
 }
 
 #[derive(Debug)]
+/// Represents a specific span of source code in a `Src`
 pub struct Span<'s, L: Language>(pub &'s Src<L>, pub Range<usize>);
 
 impl<'s, L: Language> Span<'s, L> {

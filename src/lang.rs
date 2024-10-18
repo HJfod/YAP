@@ -3,7 +3,7 @@ use std::path::Path;
 use crate::{parse::token::TokenKind, src::Codebase};
 
 /// Represents a programming language
-pub trait Language: Sized + 'static {
+pub trait Language: std::fmt::Debug + Sized + 'static {
     /// The type of tokens this language's source files consist of
     type TokenKind<'s>: TokenKind<'s, Self>;
 
