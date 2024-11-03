@@ -1,9 +1,9 @@
 use std::path::Path;
+// use prolangine_macros::NodeKind;
 use strum::EnumString;
 use prolangine::{
     parse::{
-        common::{parse_c_like_num, parse_c_like_string, parse_c_like_word, parse_delimited, parse_matching},
-        token::{ParsedTokenKind, Token, TokenKind, TokenTree},
+        common::{parse_c_like_num, parse_c_like_string, parse_c_like_word, parse_delimited, parse_matching, CommonDelimiters, Parenthesized}, node::NodeKind, token::{ParsedTokenKind, Token, TokenKind, TokenTree}
     },
     src::{Codebase, Span, Src, SrcCursor},
 };
@@ -99,6 +99,31 @@ impl<'s> TokenKind<'s> for ExampleLanguageToken<'s> {
     }
 }
 
+impl<'s> CommonDelimiters<'s> for ExampleLanguageToken<'s> {
+    fn is_parenthesized(&self) -> bool {
+        matches!(self, Self::Parenthesis(_))
+    }
+    fn parenthesized(self) -> Option<TokenTree<'s, Self>> {
+        match self {
+            Self::Parenthesis(p) => Some(p),
+            _ => None,
+        }
+    }
+}
+
+// #[derive(Debug)]
+// pub enum AtomExpr<'s> {
+//     Closed(Parenthesized<'s, ExampleLanguageToken<'s>, Box<Expr<'s>>>),
+//     String(String, Span<'s>),
+//     Number(f64, Span<'s>),
+// }
+
+// #[derive(Debug, NodeKind)]
+// #[parse(expected = "expression")]
+// pub enum Expr<'s> {
+//     Atom(AtomExpr<'s>),
+// }
+
 trait DebugEq {
     fn debug_eq(self, other: Self) -> Result<(), String>;
 }
@@ -175,11 +200,11 @@ fn parse_source_from_memory() {
                 ExampleLanguageToken::Ident("num".into()),
                 ExampleLanguageToken::Op(ExampleOp::Plus),
                 ExampleLanguageToken::Number(4.0),
-            ].into_iter().map(|t| Token::new(t, Span::builtin())).collect(), Span::builtin())),
+            ].into_iter().map(|t| Token::new(t, Span::builtin())).collect(), (Some(")"), Span::builtin()))),
             ExampleLanguageToken::Ident("print".into()),
             ExampleLanguageToken::Parenthesis(TokenTree::new(vec![
                 ExampleLanguageToken::String("hi everyone".into()),
-            ].into_iter().map(|t| Token::new(t, Span::builtin())).collect(), Span::builtin())),
+            ].into_iter().map(|t| Token::new(t, Span::builtin())).collect(), (Some(")"), Span::builtin()))),
         ].into_iter().map(|t| Token::new(t, Span::builtin())).collect()
     );
     assert!(result.is_ok(), "token stream mismatch: {}", result.unwrap_err());

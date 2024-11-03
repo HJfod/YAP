@@ -2,10 +2,37 @@
 
 use std::marker::PhantomData;
 
-use crate::src::{Span, SrcCursor};
+use crate::{log::{Level, Logger, Message}, src::{Span, SrcCursor}};
 use unicode_xid::UnicodeXID;
 
 use super::{node::NodeKind, token::{TokenIterator, TokenKind, TokenTree}};
+
+pub trait CommonDelimiters<'s>: TokenKind<'s> {
+    fn is_parenthesized(&self) -> bool {
+        false
+    }
+    fn parenthesized(self) -> Option<TokenTree<'s, Self>> {
+        None
+    }
+    fn is_bracketed(&self) -> bool {
+        false
+    }
+    fn bracketed(self) -> Option<TokenTree<'s, Self>> {
+        None
+    }
+    fn is_braced(&self) -> bool {
+        false
+    }
+    fn braced(self) -> Option<TokenTree<'s, Self>> {
+        None
+    }
+    fn is_angle_bracketed(&self) -> bool {
+        false
+    }
+    fn angle_bracketed(self) -> Option<TokenTree<'s, Self>> {
+        None
+    }
+}
 
 /// Skip C-like comments (`// ...` line comments and `/* ... */` block comments)
 /// in a source stream, as well as skipping whitespace
@@ -192,7 +219,7 @@ pub fn parse_delimited<'s, T: TokenKind<'s>>(
             // Otherwise push this token and keep looking
             tokens.push(token);
         }
-        Some(Ok(TokenTree::new(tokens, cursor.span_from(eof_start))))
+        Some(Ok(TokenTree::new(tokens, (Some(close), cursor.span_from(eof_start)))))
     }
     else {
         None
@@ -209,19 +236,24 @@ pub struct Separated<'s, N: NodeKind<'s>, S: NodeKind<'s>> {
     _phantom: PhantomData<S>,
 }
 
-impl<'s, N: NodeKind<'s>, S: NodeKind<'s>> NodeKind<'s> for Separated<'s, N, S> {
-    fn parse<T, I>(tokenizer: &mut I) -> Self
+impl<
+    's,
+    T: TokenKind<'s>,
+    N: NodeKind<'s, TokenKind = T>,
+    S: NodeKind<'s, TokenKind = T>
+> NodeKind<'s> for Separated<'s, N, S> {
+    type TokenKind = T;
+    fn parse<I>(tokenizer: &mut I, logger: &mut Logger<'s>) -> Self
         where
             Self: Sized,
-            T: TokenKind<'s>,
             I: TokenIterator<'s, T>
     {
         let start = tokenizer.start();
         if N::peek(tokenizer) {
-            let mut items = vec![N::parse(tokenizer)];
+            let mut items = vec![N::parse(tokenizer, logger)];
             while S::peek(tokenizer) {
-                S::parse(tokenizer);
-                items.push(N::parse(tokenizer));
+                S::parse(tokenizer, logger);
+                items.push(N::parse(tokenizer, logger));
             }
             Self {
                 items,
@@ -237,16 +269,17 @@ impl<'s, N: NodeKind<'s>, S: NodeKind<'s>> NodeKind<'s> for Separated<'s, N, S> 
             }
         }
     }
-    fn peek<T, I>(tokenizer: &I) -> bool
+    fn peek<I>(tokenizer: &I) -> bool
         where
             Self: Sized,
-            T: TokenKind<'s>,
             I: TokenIterator<'s, T>
     {
         N::peek(tokenizer)
     }
-    fn children(&self) -> Vec<&dyn NodeKind<'s>> {
-        self.items.iter().map(|i| i as &dyn NodeKind<'s>).collect()
+    fn children(&self) -> Vec<&dyn NodeKind<'s, TokenKind = T>> {
+        self.items.iter()
+            .map(|n| n as &dyn NodeKind<'s, TokenKind = T>)
+            .collect()
     }
     fn span(&self) -> Span<'s> {
         self.span.clone()
@@ -262,20 +295,25 @@ pub struct SeparatedOptTrailing<'s, N: NodeKind<'s>, S: NodeKind<'s>> {
     _phantom: PhantomData<S>,
 }
 
-impl<'s, N: NodeKind<'s>, S: NodeKind<'s>> NodeKind<'s> for SeparatedOptTrailing<'s, N, S> {
-    fn parse<T, I>(tokenizer: &mut I) -> Self
+impl<
+    's,
+    T: TokenKind<'s>,
+    N: NodeKind<'s, TokenKind = T>,
+    S: NodeKind<'s, TokenKind = T>
+> NodeKind<'s> for SeparatedOptTrailing<'s, N, S> {
+    type TokenKind = T;
+    fn parse<I>(tokenizer: &mut I, logger: &mut Logger<'s>) -> Self
         where
             Self: Sized,
-            T: TokenKind<'s>,
             I: TokenIterator<'s, T>
     {
         let start = tokenizer.start();
         if N::peek(tokenizer) {
-            let mut items = vec![N::parse(tokenizer)];
+            let mut items = vec![N::parse(tokenizer, logger)];
             while S::peek(tokenizer) {
-                S::parse(tokenizer);
+                S::parse(tokenizer, logger);
                 if N::peek(tokenizer) {
-                    items.push(N::parse(tokenizer));
+                    items.push(N::parse(tokenizer, logger));
                 }
                 else {
                     break;
@@ -295,18 +333,83 @@ impl<'s, N: NodeKind<'s>, S: NodeKind<'s>> NodeKind<'s> for SeparatedOptTrailing
             }
         }
     }
-    fn peek<T, I>(tokenizer: &I) -> bool
+    fn peek<I>(tokenizer: &I) -> bool
         where
             Self: Sized,
-            T: TokenKind<'s>,
             I: TokenIterator<'s, T>
     {
         N::peek(tokenizer)
     }
-    fn children(&self) -> Vec<&dyn NodeKind<'s>> {
-        self.items.iter().map(|i| i as &dyn NodeKind<'s>).collect()
+    fn children(&self) -> Vec<&dyn NodeKind<'s, TokenKind = T>> {
+        self.items.iter()
+            .map(|n| n as &dyn NodeKind<'s, TokenKind = T>)
+            .collect()
     }
     fn span(&self) -> Span<'s> {
         self.span.clone()
     }
 }
+
+macro_rules! def_delimited_node {
+    ($name: ident, $is_func: ident, $as_func: ident, $str: literal) => {
+        #[derive(Debug)]
+        pub struct $name<'s, T: CommonDelimiters<'s>, N: NodeKind<'s, TokenKind = T>> {
+            item: Option<N>,
+            span: Span<'s>,
+            _phantom: PhantomData<T>,
+        }
+
+        impl<'s, T: CommonDelimiters<'s>, N: NodeKind<'s, TokenKind = T>> NodeKind<'s> for $name<'s, T, N> {
+            type TokenKind = T;
+            fn parse<I>(tokenizer: &mut I, logger: &mut Logger<'s>) -> Self
+                where
+                    Self: Sized,
+                    I: TokenIterator<'s, Self::TokenKind>
+            {
+                let start = tokenizer.start();
+                let token = tokenizer.next();
+                if token.as_token().is_some_and(|t| t.$is_func()) {
+                    Self {
+                        item: Some(
+                            token.into_token().unwrap()
+                                .$as_func().unwrap()
+                                .parse_fully_into::<N>(logger)
+                        ),
+                        span: tokenizer.span_from(start),
+                        _phantom: PhantomData,
+                    }
+                }
+                else {
+                    logger.log(Message::new(
+                        Level::Error,
+                        format!(concat!("expected ", $str, ", got {}"), token),
+                        tokenizer.span_from(start),
+                    ));
+                    Self {
+                        item: None,
+                        span: tokenizer.span_from(start),
+                        _phantom: PhantomData,
+                    }
+                }
+            }
+            fn peek<I>(tokenizer: &I) -> bool
+                where
+                    Self: Sized,
+                    I: TokenIterator<'s, Self::TokenKind>
+            {
+                tokenizer.peek().as_token().is_some_and(|t| t.$is_func())
+            }
+            fn children(&self) -> Vec<&dyn NodeKind<'s, TokenKind = Self::TokenKind>> {
+                self.item.as_ref().map(|n| n.children()).unwrap_or_default()
+            }
+            fn span(&self) -> Span<'s> {
+                self.span.clone()
+            }
+        }
+    };
+}
+
+def_delimited_node!(Parenthesized, is_parenthesized, parenthesized, "parentheses");
+def_delimited_node!(Bracketed, is_bracketed, bracketed, "brackets");
+def_delimited_node!(Braced, is_braced, braced, "braces");
+def_delimited_node!(AngleBracketed, is_angle_bracketed, angle_bracketed, "angle brackets");

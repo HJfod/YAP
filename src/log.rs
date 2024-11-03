@@ -1,9 +1,6 @@
 use crate::src::Span;
 use colored::Colorize;
-use std::{
-    fmt::{Display, Write},
-    sync::{Arc, Mutex},
-};
+use std::fmt::{Display, Write};
 
 use super::src::Underline;
 
@@ -165,32 +162,32 @@ impl<'s> Display for Message<'s> {
     }
 }
 
-pub struct Logger {
+pub struct Logger<'s> {
     #[allow(clippy::type_complexity)]
-    logger: Box<dyn FnMut(Message<'_>)>,
+    logger: Box<dyn FnMut(Message<'s>)>,
     error_count: usize,
     warn_count: usize,
 }
 
-impl std::fmt::Debug for Logger {
+impl<'s> std::fmt::Debug for Logger<'s> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("Logger")
     }
 }
 
-impl Logger {
-    pub fn new<F: FnMut(Message<'_>) + 'static>(logger: F) -> LoggerRef {
-        Arc::from(Mutex::from(Self {
+impl<'s> Logger<'s> {
+    pub fn new<F: FnMut(Message<'s>) + 'static>(logger: F) -> Self {
+        Self {
             logger: Box::from(logger),
             error_count: 0,
             warn_count: 0,
-        }))
+        }
     }
     #[allow(clippy::should_implement_trait)]
-    pub fn default() -> LoggerRef {
+    pub fn default() -> Self {
         Self::new(default_console_logger)
     }
-    pub fn log(&mut self, msg: Message<'_>) {
+    pub fn log(&mut self, msg: Message<'s>) {
         match msg.level {
             Level::Info => {}
             Level::Warning => self.warn_count += 1,
@@ -198,15 +195,13 @@ impl Logger {
         }
         (self.logger)(msg);
     }
-    pub fn errors(&self) -> usize {
+    pub fn error_count(&self) -> usize {
         self.error_count
     }
-    pub fn warnings(&self) -> usize {
+    pub fn warn_count(&self) -> usize {
         self.warn_count
     }
 }
-
-pub(crate) type LoggerRef = Arc<Mutex<Logger>>;
 
 pub fn default_console_logger(msg: Message<'_>) {
     println!("{msg}");

@@ -1,9 +1,11 @@
+use crate::log::{Level, Logger, Message};
 use crate::src::{Span, Src, SrcCursor};
 use std::fmt::Debug;
 use std::fmt::Display;
 use std::marker::PhantomData;
 
 use super::common::skip_c_like_comments;
+use super::node::NodeKind;
 
 /// The main trait for introducing a custom syntax for a language. The
 /// language's token kind should implement this trait.
@@ -64,11 +66,54 @@ impl<'s, T: TokenKind<'s>> Token<'s, T> {
         }
     }
 
+    pub fn as_token(&self) -> Option<&T> {
+        match &self.kind {
+            ParsedTokenKind::Token(t, _) => Some(t),
+            ParsedTokenKind::EOF(_) => None,
+            ParsedTokenKind::Error(_) => None,
+        }
+    }
+    pub fn as_eof(&self) -> Option<Option<&str>> {
+        match &self.kind {
+            ParsedTokenKind::Token(_, _) => None,
+            ParsedTokenKind::EOF(s) => Some(s.as_deref()),
+            ParsedTokenKind::Error(_) => None,
+        }
+    }
+    pub fn as_error(&self) -> Option<&str> {
+        match &self.kind {
+            ParsedTokenKind::Token(_, _) => None,
+            ParsedTokenKind::EOF(_) => None,
+            ParsedTokenKind::Error(s) => Some(s),
+        }
+    }
+
     pub fn kind(&self) -> &ParsedTokenKind<'s, T> {
         &self.kind
     }
     pub fn into_kind(self) -> ParsedTokenKind<'s, T> {
         self.kind
+    }
+    pub fn into_token(self) -> Option<T> {
+        match self.kind {
+            ParsedTokenKind::Token(t, _) => Some(t),
+            ParsedTokenKind::EOF(_) => None,
+            ParsedTokenKind::Error(_) => None,
+        }
+    }
+    pub fn into_eof(self) -> Option<Option<String>> {
+        match self.kind {
+            ParsedTokenKind::Token(_, _) => None,
+            ParsedTokenKind::EOF(e) => Some(e),
+            ParsedTokenKind::Error(_) => None,
+        }
+    }
+    pub fn into_error(self) -> Option<String> {
+        match self.kind {
+            ParsedTokenKind::Token(_, _) => None,
+            ParsedTokenKind::EOF(_) => None,
+            ParsedTokenKind::Error(s) => Some(s),
+        }
     }
     pub fn span(&self) -> Span<'s> {
         self.span.clone()
@@ -172,28 +217,43 @@ pub struct TokenTree<'s, T: TokenKind<'s>> {
     // Boxed because it's normal to include `TokenTree` in a `TokenKind`
     next: Box<Token<'s, T>>,
     last_end: usize,
-    eof_span: Span<'s>,
+    eof: (Option<String>, Span<'s>),
 }
 
 impl<'s, T: TokenKind<'s>> TokenTree<'s, T> {
     fn fetch_next(
         iter: &mut std::vec::IntoIter<Token<'s, T>>,
-        eof_span: Span<'s>,
+        (eof_name, eof_span): (Option<&str>, Span<'s>),
     ) -> Token<'s, T> {
-        iter.next().unwrap_or_else(|| Token::new_eof(None, eof_span.clone()))
+        iter.next().unwrap_or_else(|| Token::new_eof(eof_name, eof_span.clone()))
     }
-    pub fn new(tokens: Vec<Token<'s, T>>, eof_span: Span<'s>) -> Self {
+    pub fn new(tokens: Vec<Token<'s, T>>, eof: (Option<&str>, Span<'s>)) -> Self {
         let mut tokens = tokens.into_iter();
         Self {
-            next: Box::from(Self::fetch_next(&mut tokens, eof_span.clone())),
+            next: Box::from(Self::fetch_next(&mut tokens, eof.clone())),
             tokens,
-            eof_span,
+            eof: (eof.0.map(|s| s.to_owned()), eof.1.clone()),
             last_end: 0,
         }
     }
     /// Consumes this tree and turns it into a vector of its contents
     pub fn into_items(self) -> Vec<Token<'s, T>> {
         self.tokens.collect()
+    }
+    pub fn parse_fully_into<N: NodeKind<'s, TokenKind = T>>(mut self, logger: &mut Logger<'s>) -> N {
+        let res = N::parse(&mut self, logger);
+        if !self.next.is_eof() {
+            logger.log(Message::new(
+                Level::Error,
+                format!(
+                    "expected {}, got {}",
+                    self.eof.0.unwrap_or("end-of-file".to_string()),
+                    self.next
+                ),
+                self.next.span(),
+            ));
+        }
+        res
     }
 }
 
@@ -202,7 +262,7 @@ impl<'s, T: TokenKind<'s>> TokenIterator<'s, T> for TokenTree<'s, T> {
         self.last_end = self.next.span().1.end;
         std::mem::replace(
             &mut self.next,
-            Self::fetch_next(&mut self.tokens, self.eof_span.clone())
+            Self::fetch_next(&mut self.tokens, (self.eof.0.as_deref(), self.eof.1.clone()))
         )
     }
     fn peek(&self) -> &Token<'s, T> {
