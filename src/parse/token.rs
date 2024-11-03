@@ -112,26 +112,56 @@ impl<'s, L: Language> Display for Token<'s, L> {
 }
 
 /// Anything that can return Tokens should impl TokenIterator; which is not an
-/// Iterator because it can never return None
-pub(crate) trait TokenIterator<'s, L: Language> {
+/// Iterator because it can never return None (and also so `peek` is not `mut`)
+pub trait TokenIterator<'s, L: Language> {
+    /// Get the next `Token` in the stream
     fn next(&mut self) -> Token<'s, L>;
+    /// Get the next upcoming `Token` in the stream without consuming it
+    fn peek(&self) -> &Token<'s, L>;
+    /// Get the start position of the next `Token`
+    fn start(&self) -> usize;
+    /// Get the span from `start` to the end of the last token returned
+    fn span_from(&self, start: usize) -> Span<'s, L>;
+
+    fn src(&self) -> &'s Src<L>;
 }
 
 /// Turns an unparsed source file into tokens
 pub(crate) struct Tokenizer<'s, L: Language> {
     cursor: SrcCursor<'s, L>,
+    next: Token<'s, L>,
+    last_end: usize,
 }
 impl<'s, L: Language> Tokenizer<'s, L> {
+    fn fetch_next(cursor: &mut SrcCursor<'s, L>) -> Token<'s, L> {
+        L::TokenKind::skip_to_next(cursor);
+        L::TokenKind::next(cursor)
+    }
     pub fn new(src: &'s Src<L>) -> Self {
+        let mut cursor = src.cursor();
         Self {
-            cursor: src.cursor(),
+            next: Self::fetch_next(&mut cursor),
+            cursor,
+            last_end: 0,
         }
     }
 }
 impl<'s, L: Language> TokenIterator<'s, L> for Tokenizer<'s, L> {
     fn next(&mut self) -> Token<'s, L> {
-        L::TokenKind::skip_to_next(&mut self.cursor);
-        L::TokenKind::next(&mut self.cursor)
+        self.last_end = self.next.span().1.end;
+        std::mem::replace(&mut self.next, Self::fetch_next(&mut self.cursor))
+    }
+    fn peek(&self) -> &Token<'s, L> {
+        &self.next
+    }
+    fn start(&self) -> usize {
+        self.next.span().1.start
+    }
+    fn span_from(&self, start: usize) -> Span<'s, L> {
+       Span(self.cursor.src(), start..self.last_end)
+    }
+    fn src(&self) -> &'s Src<L> {
+        self.cursor.src()
     }
 }
 
@@ -139,14 +169,26 @@ impl<'s, L: Language> TokenIterator<'s, L> for Tokenizer<'s, L> {
 /// A list of pre-parsed tokens
 pub struct TokenTree<'s, L: Language> {
     tokens: std::vec::IntoIter<Token<'s, L>>,
+    // Boxed because it's normal to include `TokenTree` in a `TokenKind`
+    next: Box<Token<'s, L>>,
+    last_end: usize,
     eof_span: Span<'s, L>,
 }
 
 impl<'s, L: Language> TokenTree<'s, L> {
+    fn fetch_next(
+        iter: &mut std::vec::IntoIter<Token<'s, L>>,
+        eof_span: Span<'s, L>,
+    ) -> Token<'s, L> {
+        iter.next().unwrap_or_else(|| Token::new_eof(None, eof_span.clone()))
+    }
     pub fn new(tokens: Vec<Token<'s, L>>, eof_span: Span<'s, L>) -> Self {
+        let mut tokens = tokens.into_iter();
         Self {
-            tokens: tokens.into_iter(),
+            next: Box::from(Self::fetch_next(&mut tokens, eof_span.clone())),
+            tokens,
             eof_span,
+            last_end: 0,
         }
     }
     /// Consumes this tree and turns it into a vector of its contents
@@ -157,8 +199,22 @@ impl<'s, L: Language> TokenTree<'s, L> {
 
 impl<'s, L: Language> TokenIterator<'s, L> for TokenTree<'s, L> {
     fn next(&mut self) -> Token<'s, L> {
-        self.tokens
-            .next()
-            .unwrap_or(Token::new_eof(None, self.eof_span.clone()))
+        self.last_end = self.next.span().1.end;
+        std::mem::replace(
+            &mut self.next,
+            Self::fetch_next(&mut self.tokens, self.eof_span.clone())
+        )
+    }
+    fn peek(&self) -> &Token<'s, L> {
+        &self.next
+    }
+    fn start(&self) -> usize {
+        self.next.span().1.start
+    }
+    fn span_from(&self, start: usize) -> Span<'s, L> {
+       Span(self.next.span().0, start..self.last_end)
+    }
+    fn src(&self) -> &'s Src<L> {
+        self.next.span().0
     }
 }

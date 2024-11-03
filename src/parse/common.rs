@@ -1,9 +1,11 @@
 //! Common parsing utilities for crafting C-like languages
 
+use std::marker::PhantomData;
+
 use crate::{lang::Language, src::{Span, SrcCursor}};
 use unicode_xid::UnicodeXID;
 
-use super::token::{TokenKind, TokenTree};
+use super::{node::NodeKind, token::{TokenKind, TokenTree}};
 
 /// Skip C-like comments (`// ...` line comments and `/* ... */` block comments)
 /// in a source stream, as well as skipping whitespace
@@ -194,5 +196,113 @@ pub fn parse_delimited<'s, L: Language>(
     }
     else {
         None
+    }
+}
+
+/// List of nodes separated by another node.
+/// * **NOTE**: Use `SeparatedOptTrailing` if you want to allow trailing separators
+/// * **NOTE**: the separator nodes are discarded and aren't actually stored!
+#[derive(Debug)]
+pub struct Separated<'s, L: Language, N: NodeKind<'s, L>, S: NodeKind<'s, L>> {
+    items: Vec<N>,
+    span: Span<'s, L>,
+    _phantom: PhantomData<S>,
+}
+
+impl<'s, L: Language, N: NodeKind<'s, L>, S: NodeKind<'s, L>> NodeKind<'s, L> for Separated<'s, L, N, S> {
+    fn parse<T>(tokenizer: &mut T) -> Self
+        where
+            Self: Sized,
+            T: super::token::TokenIterator<'s, L>
+    {
+        let start = tokenizer.start();
+        if N::peek(tokenizer) {
+            let mut items = vec![N::parse(tokenizer)];
+            while S::peek(tokenizer) {
+                S::parse(tokenizer);
+                items.push(N::parse(tokenizer));
+            }
+            Self {
+                items,
+                span: tokenizer.span_from(start),
+                _phantom: PhantomData,
+            }
+        }
+        else {
+            Self {
+                items: vec![],
+                span: Span(tokenizer.src(), start..start),
+                _phantom: PhantomData,
+            }
+        }
+    }
+    fn peek<T>(tokenizer: &T) -> bool
+        where
+            Self: Sized,
+            T: super::token::TokenIterator<'s, L>
+    {
+        N::peek(tokenizer)
+    }
+    fn children(&self) -> Vec<&dyn NodeKind<'s, L>> {
+        self.items.iter().map(|i| i as &dyn NodeKind<'s, L>).collect()
+    }
+    fn span(&self) -> Span<'s, L> {
+        self.span.clone()
+    }
+}
+
+/// List of nodes separated by another node with optional trailing separator
+/// * **NOTE**: the separator nodes are discarded and aren't actually stored!
+#[derive(Debug)]
+pub struct SeparatedOptTrailing<'s, L: Language, N: NodeKind<'s, L>, S: NodeKind<'s, L>> {
+    items: Vec<N>,
+    span: Span<'s, L>,
+    _phantom: PhantomData<S>,
+}
+
+impl<'s, L: Language, N: NodeKind<'s, L>, S: NodeKind<'s, L>> NodeKind<'s, L> for SeparatedOptTrailing<'s, L, N, S> {
+    fn parse<T>(tokenizer: &mut T) -> Self
+        where
+            Self: Sized,
+            T: super::token::TokenIterator<'s, L>
+    {
+        let start = tokenizer.start();
+        if N::peek(tokenizer) {
+            let mut items = vec![N::parse(tokenizer)];
+            while S::peek(tokenizer) {
+                S::parse(tokenizer);
+                if N::peek(tokenizer) {
+                    items.push(N::parse(tokenizer));
+                }
+                else {
+                    break;
+                }
+            }
+            Self {
+                items,
+                span: tokenizer.span_from(start),
+                _phantom: PhantomData,
+            }
+        }
+        else {
+            Self {
+                items: vec![],
+                span: Span(tokenizer.src(), start..start),
+                _phantom: PhantomData,
+            }
+        }
+    }
+    fn peek<T>(tokenizer: &T) -> bool
+        where
+            Self: Sized,
+            T: super::token::TokenIterator<'s, L>
+    {
+        N::peek(tokenizer)
+    }
+    fn children(&self) -> Vec<&dyn NodeKind<'s, L>> {
+        self.items.iter().map(|i| i as &dyn NodeKind<'s, L>).collect()
+    }
+    fn span(&self) -> Span<'s, L> {
+        self.span.clone()
     }
 }

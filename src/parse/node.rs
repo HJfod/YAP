@@ -2,44 +2,59 @@
 use std::fmt::Debug;
 use crate::{lang::Language, src::Span};
 
-pub trait NodeKind<'s>: Debug {
-    type Language: Language;
+use super::token::TokenIterator;
+
+pub trait NodeKind<'s, L: Language>: Debug {
+    fn parse<T>(tokenizer: &mut T) -> Self
+        where
+            Self: Sized,
+            T: TokenIterator<'s, L>;
+
+    /// Check if this type is posisbly coming up on the token stream at a position
+    fn peek<T>(tokenizer: &T) -> bool
+        where
+            Self: Sized,
+            T: TokenIterator<'s, L>;
 
     /// Get the children of this AST node
-    fn children(&self) -> Vec<Box<dyn NodeKind<'s, Language = Self::Language>>>;
+    fn children(&self) -> Vec<&dyn NodeKind<'s, L>>;
 
     /// Get the span (raw source code string) of this node
-    fn span(&self) -> Span<'s, Self::Language>;
+    fn span(&self) -> Span<'s, L>;
 }
 
 #[derive(Debug)]
-pub struct Maybe<'s, N: NodeKind<'s>> {
+pub struct Maybe<'s, L: Language, N: NodeKind<'s, L>> {
     node: Option<N>,
-    span: Span<'s, N::Language>,
+    span: Span<'s, L>,
 }
 
-impl<'s, N: NodeKind<'s>> NodeKind<'s> for Maybe<'s, N> {
-    type Language = N::Language;
-    fn children(&self) -> Vec<Box<dyn NodeKind<'s, Language = Self::Language>>> {
-        self.node.as_ref().map(|n| n.children()).unwrap_or_default()
+impl<'s, L: Language, N: NodeKind<'s, L>> NodeKind<'s, L> for Maybe<'s, L, N> {
+    fn parse<T>(tokenizer: &mut T) -> Self
+        where
+            Self: Sized,
+            T: TokenIterator<'s, L>
+    {
+        let start = tokenizer.start();
+        Self {
+            node: N::peek(tokenizer).then(|| N::parse(tokenizer)),
+            span: tokenizer.span_from(start),
+        }
     }
-    fn span(&self) -> Span<'s, Self::Language> {
-        self.span.clone()
+    fn peek<T>(tokenizer: &T) -> bool
+        where
+            Self: Sized,
+            T: TokenIterator<'s, L>
+    {
+        N::peek(tokenizer)
     }
-}
 
-#[derive(Debug)]
-pub struct List<'s, N: NodeKind<'s>> {
-    list: Vec<N>,
-    span: Span<'s, N::Language>,
-}
-
-impl<'s, N: NodeKind<'s>> NodeKind<'s> for List<'s, N> {
-    type Language = N::Language;
-    fn children(&self) -> Vec<Box<dyn NodeKind<'s, Language = Self::Language>>> {
-        self.list.iter().flat_map(|n| n.children()).collect()
+    fn children(&self) -> Vec<&dyn NodeKind<'s, L>> {
+        self.node.as_ref()
+            .map(|n| vec![n as &dyn NodeKind<'s, L>])
+            .unwrap_or_default()
     }
-    fn span(&self) -> Span<'s, Self::Language> {
+    fn span(&self) -> Span<'s, L> {
         self.span.clone()
     }
 }
