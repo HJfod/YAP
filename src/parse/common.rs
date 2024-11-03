@@ -2,14 +2,14 @@
 
 use std::marker::PhantomData;
 
-use crate::{lang::Language, src::{Span, SrcCursor}};
+use crate::src::{Span, SrcCursor};
 use unicode_xid::UnicodeXID;
 
-use super::{node::NodeKind, token::{TokenKind, TokenTree}};
+use super::{node::NodeKind, token::{TokenIterator, TokenKind, TokenTree}};
 
 /// Skip C-like comments (`// ...` line comments and `/* ... */` block comments)
 /// in a source stream, as well as skipping whitespace
-pub fn skip_c_like_comments<L: Language>(cursor: &mut SrcCursor<L>) {
+pub fn skip_c_like_comments(cursor: &mut SrcCursor) {
     loop {
         // Ignore line comments
         if cursor.peek().is_some_and(|c| c == '/') && cursor.peek_n(1).is_some_and(|c| c == '/') {
@@ -33,7 +33,7 @@ pub fn skip_c_like_comments<L: Language>(cursor: &mut SrcCursor<L>) {
 
 /// Parse a word that matches [XID_Start XID_Continue*], aka a keyword or an
 /// identifier for most languages
-pub fn parse_c_like_word<'s, L: Language>(cursor: &mut SrcCursor<'s, L>) -> Option<&'s str> {
+pub fn parse_c_like_word<'s>(cursor: &mut SrcCursor<'s>) -> Option<&'s str> {
     let start = cursor.pos();
     if cursor.next_if(UnicodeXID::is_xid_start).is_some() {
         while cursor.next_if(UnicodeXID::is_xid_continue).is_some() {}
@@ -47,7 +47,7 @@ pub fn parse_c_like_word<'s, L: Language>(cursor: &mut SrcCursor<'s, L>) -> Opti
 /// Parses a C-like integer or decimal number. Note that this assumes decimal
 /// numbers have digits on either side of the dot, so `.0` and `2.` are not
 /// valid
-pub fn parse_c_like_num<'s, L: Language>(cursor: &mut SrcCursor<'s, L>) -> Option<(&'s str, bool)> {
+pub fn parse_c_like_num<'s>(cursor: &mut SrcCursor<'s>) -> Option<(&'s str, bool)> {
     let start = cursor.pos();
     if cursor.next_if(|c| c.is_ascii_digit()).is_some() {
         // Parse all digits found
@@ -76,15 +76,15 @@ pub fn parse_c_like_num<'s, L: Language>(cursor: &mut SrcCursor<'s, L>) -> Optio
     }
 }
 
-pub struct ParseError<'s, L: Language> {
+pub struct ParseError<'s> {
     pub msg: String,
-    pub span: Span<'s, L>,
+    pub span: Span<'s>,
 }
 
 /// Parses a C-like string literal. Supports common escaping characters
-pub fn parse_c_like_string<'s, L: Language>(
-    cursor: &mut SrcCursor<'s, L>,
-) -> Option<Result<String, ParseError<'s, L>>> {
+pub fn parse_c_like_string<'s>(
+    cursor: &mut SrcCursor<'s>,
+) -> Option<Result<String, ParseError<'s>>> {
     if cursor.next_if(|c| c == '"').is_some() {
         let mut escaped = String::new();
         loop {
@@ -130,7 +130,7 @@ pub fn parse_c_like_string<'s, L: Language>(
 }
 
 /// Expect an exact string to appear in the source string
-pub fn parse_exact<'s, L: Language>(text: &str, cursor: &mut SrcCursor<'s, L>) -> Option<&'s str> {
+pub fn parse_exact<'s>(text: &str, cursor: &mut SrcCursor<'s>) -> Option<&'s str> {
     let start = cursor.pos();
     // First check that the entire string is coming up
     for (i, c) in text.chars().enumerate() {
@@ -148,7 +148,7 @@ pub fn parse_exact<'s, L: Language>(text: &str, cursor: &mut SrcCursor<'s, L>) -
 
 /// Parse characters matching a predicate until one that doesn't match is 
 /// encountered
-pub fn parse_matching<'s, L: Language, F>(matcher: F, cursor: &mut SrcCursor<'s, L>) -> Option<&'s str>
+pub fn parse_matching<'s, F>(matcher: F, cursor: &mut SrcCursor<'s>) -> Option<&'s str>
     where F: Fn(char) -> bool
 {
     let start = cursor.pos();
@@ -162,16 +162,16 @@ pub fn parse_matching<'s, L: Language, F>(matcher: F, cursor: &mut SrcCursor<'s,
 }
 
 /// Parse a delimited sequence
-pub fn parse_delimited<'s, L: Language>(
+pub fn parse_delimited<'s, T: TokenKind<'s>>(
     open: &str,
     close: &str,
-    cursor: &mut SrcCursor<'s, L>,
-) -> Option<Result<TokenTree<'s, L>, ParseError<'s, L>>> {
+    cursor: &mut SrcCursor<'s>,
+) -> Option<Result<TokenTree<'s, T>, ParseError<'s>>> {
     if parse_exact(open, cursor).is_some() {
         let mut tokens = Vec::new();
         let mut eof_start;
         loop {
-            L::TokenKind::skip_to_next(cursor);
+            T::skip_to_next(cursor);
 
             eof_start = cursor.pos();
 
@@ -181,7 +181,7 @@ pub fn parse_delimited<'s, L: Language>(
             }
 
             // Check for EOF (unclosed delimited sequence)
-            let token = L::TokenKind::next(cursor);
+            let token = T::next(cursor);
             if token.is_eof() {
                 return Some(Err(ParseError {
                     msg: format!("expected '{close}', got {}", token),
@@ -203,17 +203,18 @@ pub fn parse_delimited<'s, L: Language>(
 /// * **NOTE**: Use `SeparatedOptTrailing` if you want to allow trailing separators
 /// * **NOTE**: the separator nodes are discarded and aren't actually stored!
 #[derive(Debug)]
-pub struct Separated<'s, L: Language, N: NodeKind<'s, L>, S: NodeKind<'s, L>> {
+pub struct Separated<'s, N: NodeKind<'s>, S: NodeKind<'s>> {
     items: Vec<N>,
-    span: Span<'s, L>,
+    span: Span<'s>,
     _phantom: PhantomData<S>,
 }
 
-impl<'s, L: Language, N: NodeKind<'s, L>, S: NodeKind<'s, L>> NodeKind<'s, L> for Separated<'s, L, N, S> {
-    fn parse<T>(tokenizer: &mut T) -> Self
+impl<'s, N: NodeKind<'s>, S: NodeKind<'s>> NodeKind<'s> for Separated<'s, N, S> {
+    fn parse<T, I>(tokenizer: &mut I) -> Self
         where
             Self: Sized,
-            T: super::token::TokenIterator<'s, L>
+            T: TokenKind<'s>,
+            I: TokenIterator<'s, T>
     {
         let start = tokenizer.start();
         if N::peek(tokenizer) {
@@ -236,17 +237,18 @@ impl<'s, L: Language, N: NodeKind<'s, L>, S: NodeKind<'s, L>> NodeKind<'s, L> fo
             }
         }
     }
-    fn peek<T>(tokenizer: &T) -> bool
+    fn peek<T, I>(tokenizer: &I) -> bool
         where
             Self: Sized,
-            T: super::token::TokenIterator<'s, L>
+            T: TokenKind<'s>,
+            I: TokenIterator<'s, T>
     {
         N::peek(tokenizer)
     }
-    fn children(&self) -> Vec<&dyn NodeKind<'s, L>> {
-        self.items.iter().map(|i| i as &dyn NodeKind<'s, L>).collect()
+    fn children(&self) -> Vec<&dyn NodeKind<'s>> {
+        self.items.iter().map(|i| i as &dyn NodeKind<'s>).collect()
     }
-    fn span(&self) -> Span<'s, L> {
+    fn span(&self) -> Span<'s> {
         self.span.clone()
     }
 }
@@ -254,17 +256,18 @@ impl<'s, L: Language, N: NodeKind<'s, L>, S: NodeKind<'s, L>> NodeKind<'s, L> fo
 /// List of nodes separated by another node with optional trailing separator
 /// * **NOTE**: the separator nodes are discarded and aren't actually stored!
 #[derive(Debug)]
-pub struct SeparatedOptTrailing<'s, L: Language, N: NodeKind<'s, L>, S: NodeKind<'s, L>> {
+pub struct SeparatedOptTrailing<'s, N: NodeKind<'s>, S: NodeKind<'s>> {
     items: Vec<N>,
-    span: Span<'s, L>,
+    span: Span<'s>,
     _phantom: PhantomData<S>,
 }
 
-impl<'s, L: Language, N: NodeKind<'s, L>, S: NodeKind<'s, L>> NodeKind<'s, L> for SeparatedOptTrailing<'s, L, N, S> {
-    fn parse<T>(tokenizer: &mut T) -> Self
+impl<'s, N: NodeKind<'s>, S: NodeKind<'s>> NodeKind<'s> for SeparatedOptTrailing<'s, N, S> {
+    fn parse<T, I>(tokenizer: &mut I) -> Self
         where
             Self: Sized,
-            T: super::token::TokenIterator<'s, L>
+            T: TokenKind<'s>,
+            I: TokenIterator<'s, T>
     {
         let start = tokenizer.start();
         if N::peek(tokenizer) {
@@ -292,17 +295,18 @@ impl<'s, L: Language, N: NodeKind<'s, L>, S: NodeKind<'s, L>> NodeKind<'s, L> fo
             }
         }
     }
-    fn peek<T>(tokenizer: &T) -> bool
+    fn peek<T, I>(tokenizer: &I) -> bool
         where
             Self: Sized,
-            T: super::token::TokenIterator<'s, L>
+            T: TokenKind<'s>,
+            I: TokenIterator<'s, T>
     {
         N::peek(tokenizer)
     }
-    fn children(&self) -> Vec<&dyn NodeKind<'s, L>> {
-        self.items.iter().map(|i| i as &dyn NodeKind<'s, L>).collect()
+    fn children(&self) -> Vec<&dyn NodeKind<'s>> {
+        self.items.iter().map(|i| i as &dyn NodeKind<'s>).collect()
     }
-    fn span(&self) -> Span<'s, L> {
+    fn span(&self) -> Span<'s> {
         self.span.clone()
     }
 }

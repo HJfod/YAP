@@ -1,4 +1,4 @@
-use crate::{lang::Language, src::Span};
+use crate::src::Span;
 use colored::Colorize;
 use std::{
     fmt::{Display, Write},
@@ -69,13 +69,13 @@ impl Display for NoteKind {
 }
 
 #[derive(Debug)]
-pub struct Note<'s, L: Language> {
+pub struct Note<'s> {
     info: String,
-    at: Option<Span<'s, L>>,
+    at: Option<Span<'s>>,
     kind: NoteKind,
 }
 
-impl<'s, L: Language> Note<'s, L> {
+impl<'s> Note<'s> {
     pub fn new<S: Into<String>>(info: S, hint: bool) -> Self {
         Self {
             info: info.into(),
@@ -83,14 +83,14 @@ impl<'s, L: Language> Note<'s, L> {
             kind: if hint { NoteKind::Hint } else { NoteKind::Note },
         }
     }
-    pub fn new_at<S: Into<String>>(info: S, span: Span<'s, L>) -> Self {
+    pub fn new_at<S: Into<String>>(info: S, span: Span<'s>) -> Self {
         Self {
             info: info.into(),
             at: Some(span),
             kind: NoteKind::Note,
         }
     }
-    pub fn hint<S: Into<String>>(info: S, span: Span<'s, L>) -> Self {
+    pub fn hint<S: Into<String>>(info: S, span: Span<'s>) -> Self {
         Self {
             info: info.into(),
             at: Some(span),
@@ -99,7 +99,7 @@ impl<'s, L: Language> Note<'s, L> {
     }
 }
 
-impl<'s, L: Language> Display for Note<'s, L> {
+impl<'s> Display for Note<'s> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if let Some(ref span) = self.at {
             write!(
@@ -117,15 +117,15 @@ impl<'s, L: Language> Display for Note<'s, L> {
 }
 
 #[derive(Debug)]
-pub struct Message<'s, L: Language> {
+pub struct Message<'s> {
     pub(crate) level: Level,
     info: String,
-    notes: Vec<Note<'s, L>>,
-    span: Span<'s, L>,
+    notes: Vec<Note<'s>>,
+    span: Span<'s>,
 }
 
-impl<'s, L: Language> Message<'s, L> {
-    pub fn new<S: Display>(level: Level, info: S, span: Span<'s, L>) -> Self {
+impl<'s> Message<'s> {
+    pub fn new<S: Display>(level: Level, info: S, span: Span<'s>) -> Self {
         Self {
             level,
             info: info.to_string(),
@@ -133,21 +133,21 @@ impl<'s, L: Language> Message<'s, L> {
             span,
         }
     }
-    pub fn note(mut self, note: Note<'s, L>) -> Self {
+    pub fn note(mut self, note: Note<'s>) -> Self {
         self.notes.push(note);
         self
     }
 }
 
-impl<'s, L: Language> Display for Message<'s, L> {
+impl<'s> Display for Message<'s> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // todo: migrate to https://crates.io/crates/lyneate mayhaps
 
         fn indent(msg: &str) -> String {
             let mut lines = msg.lines();
             let first = lines.next().unwrap_or_default();
-            lines.fold(first.to_string(), |mut acc, l| {
-                write!(&mut acc, "\n{:>3}{}", "", l).unwrap();
+            lines.fold(first.to_string(), |mut acc, line| {
+                write!(&mut acc, "\n{:>3}{}", "", line).unwrap();
                 acc
             })
         }
@@ -165,21 +165,21 @@ impl<'s, L: Language> Display for Message<'s, L> {
     }
 }
 
-pub struct Logger<L: Language> {
+pub struct Logger {
     #[allow(clippy::type_complexity)]
-    logger: Box<dyn FnMut(Message<'_, L>)>,
+    logger: Box<dyn FnMut(Message<'_>)>,
     error_count: usize,
     warn_count: usize,
 }
 
-impl<L: Language> std::fmt::Debug for Logger<L> {
+impl std::fmt::Debug for Logger {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("Logger")
     }
 }
 
-impl<L: Language> Logger<L> {
-    pub fn new<F: FnMut(Message<'_, L>) + 'static>(logger: F) -> LoggerRef<L> {
+impl Logger {
+    pub fn new<F: FnMut(Message<'_>) + 'static>(logger: F) -> LoggerRef {
         Arc::from(Mutex::from(Self {
             logger: Box::from(logger),
             error_count: 0,
@@ -187,10 +187,10 @@ impl<L: Language> Logger<L> {
         }))
     }
     #[allow(clippy::should_implement_trait)]
-    pub fn default() -> LoggerRef<L> {
+    pub fn default() -> LoggerRef {
         Self::new(default_console_logger)
     }
-    pub fn log(&mut self, msg: Message<'_, L>) {
+    pub fn log(&mut self, msg: Message<'_>) {
         match msg.level {
             Level::Info => {}
             Level::Warning => self.warn_count += 1,
@@ -206,8 +206,8 @@ impl<L: Language> Logger<L> {
     }
 }
 
-pub(crate) type LoggerRef<L> = Arc<Mutex<Logger<L>>>;
+pub(crate) type LoggerRef = Arc<Mutex<Logger>>;
 
-pub fn default_console_logger<L: Language>(msg: Message<'_, L>) {
+pub fn default_console_logger(msg: Message<'_>) {
     println!("{msg}");
 }
