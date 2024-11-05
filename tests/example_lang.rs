@@ -1,9 +1,19 @@
 use std::path::Path;
-// use prolangine_macros::NodeKind;
+use prolangine_macros::NodeKind;
 use strum::EnumString;
 use prolangine::{
     parse::{
-        common::{parse_c_like_num, parse_c_like_string, parse_c_like_word, parse_delimited, parse_matching, CommonDelimiters, Parenthesized}, node::NodeKind, token::{ParsedTokenKind, Token, TokenKind, TokenTree}
+        common::{
+            parse_c_like_num,
+            parse_c_like_string,
+            parse_c_like_word,
+            parse_delimited,
+            parse_matching,
+            CommonDelimiters,
+            Parenthesized
+        },
+        node::NodeKind,
+        token::{ParsedTokenKind, Token, TokenKind, TokenTree}
     },
     src::{Codebase, Span, Src, SrcCursor},
 };
@@ -111,18 +121,18 @@ impl<'s> CommonDelimiters<'s> for ExampleLanguageToken<'s> {
     }
 }
 
-// #[derive(Debug)]
-// pub enum AtomExpr<'s> {
-//     Closed(Parenthesized<'s, ExampleLanguageToken<'s>, Box<Expr<'s>>>),
-//     String(String, Span<'s>),
-//     Number(f64, Span<'s>),
-// }
+#[derive(Debug)]
+pub enum AtomExpr<'s> {
+    Closed(Parenthesized<'s, ExampleLanguageToken<'s>, Box<Expr<'s>>>),
+    String(String, Span<'s>),
+    Number(f64, Span<'s>),
+}
 
-// #[derive(Debug, NodeKind)]
-// #[parse(expected = "expression")]
-// pub enum Expr<'s> {
-//     Atom(AtomExpr<'s>),
-// }
+#[derive(Debug, NodeKind)]
+#[parse(expected = "expression")]
+pub enum Expr<'s> {
+    Atom(AtomExpr<'s>),
+}
 
 trait DebugEq {
     fn debug_eq(self, other: Self) -> Result<(), String>;
