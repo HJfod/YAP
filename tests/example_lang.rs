@@ -2,7 +2,7 @@ use std::path::Path;
 use prolangine_macros::NodeKind;
 use strum::EnumString;
 use prolangine::{
-    parse::{
+    log::{Level, Message}, parse::{
         common::{
             parse_c_like_num,
             parse_c_like_string,
@@ -14,8 +14,7 @@ use prolangine::{
         },
         node::NodeKind,
         token::{ParsedTokenKind, Token, TokenKind, TokenTree}
-    },
-    src::{Codebase, Span, Src, SrcCursor},
+    }, src::{Codebase, Span, Src, SrcCursor}
 };
 
 #[derive(Debug, PartialEq, strum::Display, EnumString)]
@@ -128,10 +127,50 @@ pub enum AtomExpr<'s> {
     Number(f64, Span<'s>),
 }
 
-#[derive(Debug, NodeKind)]
+impl<'s> NodeKind<'s> for AtomExpr<'s> {
+    type TokenKind = ExampleLanguageToken<'s>;
+    fn parse<I>(tokenizer: &mut I, logger: &mut prolangine::log::Logger<'s>) -> Self
+        where
+            Self: Sized,
+            I: prolangine::parse::token::TokenIterator<'s, Self::TokenKind>
+    {
+        if Parenthesized::<'s, ExampleLanguageToken<'s>, Box<Expr<'s>>>::peek(tokenizer) {
+            Self::Closed(Parenthesized::parse(tokenizer, logger))
+        }
+        else {
+            let token = Token::<'s, ExampleLanguageToken<'s>>::parse(tokenizer, logger);
+            match token.as_token() {
+                Some(ExampleLanguageToken::String(n)) => Self::String(n.to_string(), token.span()),
+                Some(ExampleLanguageToken::Number(n)) => Self::Number(*n, token.span()),
+                _ => {
+                    logger.log(Message::new(Level::Error, format!("expected expression, got {token}"), token.span()));
+                    Self::Number(0.0, Span::builtin())
+                }
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
 #[parse(expected = "expression")]
 pub enum Expr<'s> {
     Atom(AtomExpr<'s>),
+}
+
+impl<'s> NodeKind<'s> for Expr<'s> {
+    type TokenKind = ExampleLanguageToken<'s>;
+    fn parse<I>(tokenizer: &mut I, logger: &mut prolangine::log::Logger<'s>) -> Self
+        where
+            Self: Sized,
+            I: prolangine::parse::token::TokenIterator<'s, Self::TokenKind>
+    {
+        if AtomExpr::peek(tokenizer) {
+            Self::Atom(AtomExpr::parse(tokenizer, logger))
+        }
+        else {
+            logger.log();
+        }
+    }
 }
 
 trait DebugEq {
