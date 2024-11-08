@@ -103,53 +103,49 @@ pub fn parse_c_like_num<'s>(cursor: &mut SrcCursor<'s>) -> Option<(&'s str, bool
     }
 }
 
-pub struct ParseError<'s> {
-    pub msg: String,
-    pub span: Span<'s>,
-}
-
 /// Parses a C-like string literal. Supports common escaping characters
-pub fn parse_c_like_string<'s>(
-    cursor: &mut SrcCursor<'s>,
-) -> Option<Result<String, ParseError<'s>>> {
+pub fn parse_c_like_string<'s>(cursor: &mut SrcCursor<'s>, logger: &mut Logger<'s>) -> Option<String> {
+    // todo: smart multiline string literal
     if cursor.next_if(|c| c == '"').is_some() {
         let mut escaped = String::new();
         loop {
             let Some(c) = cursor.next() else {
-                return Some(Err(ParseError {
-                    msg: "unterminated string literal".into(),
-                    span: Span(cursor.src(), cursor.pos()..cursor.pos()),
-                }));
+                logger.error("unterminated string literal", Span(cursor.src(), cursor.pos()..cursor.pos()));
+                break;
             };
             if c == '"' {
                 break;
             }
-            escaped.push(match c {
+            if let Some(c) = match c {
                 '\\' => match cursor.next() {
-                    Some('n') => '\n',
-                    Some('t') => '\t',
-                    Some('0') => '\0',
-                    Some('r') => '\r',
-                    Some('\\') => '\\',
-                    Some('\"') => '\"',
-                    Some('\'') => '\'',
+                    Some('n') => Some('\n'),
+                    Some('t') => Some('\t'),
+                    Some('0') => Some('\0'),
+                    Some('r') => Some('\r'),
+                    Some('\\') => Some('\\'),
+                    Some('\"') => Some('\"'),
+                    Some('\'') => Some('\''),
                     Some(c) => {
-                        return Some(Err(ParseError {
-                            msg: format!("invalid escape sequence '\\{c}'"),
-                            span: Span(cursor.src(), cursor.pos() - 1..cursor.pos()),
-                        }));
+                        logger.error(
+                            format!("invalid escape sequence '\\{c}'"),
+                            Span(cursor.src(), cursor.pos() - 1..cursor.pos()),
+                        );
+                        None
                     }
                     None => {
-                        return Some(Err(ParseError {
-                            msg: "expected escape sequence".into(),
-                            span: Span(cursor.src(), cursor.pos() - 1..cursor.pos()),
-                        }));
+                        logger.error(
+                            "expected escape sequence",
+                            Span(cursor.src(), cursor.pos() - 1..cursor.pos()),
+                        );
+                        None
                     }
                 },
-                o => o,
-            });
+                o => Some(o),
+            } {
+                escaped.push(c);
+            }
         }
-        Some(Ok(escaped))
+        Some(escaped)
     }
     else {
         None
@@ -193,7 +189,8 @@ pub fn parse_delimited<'s, T: TokenKind<'s>>(
     open: &str,
     close: &str,
     cursor: &mut SrcCursor<'s>,
-) -> Option<Result<TokenTree<'s, T>, ParseError<'s>>> {
+    logger: &mut Logger<'s>,
+) -> Option<TokenTree<'s, T>> {
     if parse_exact(open, cursor).is_some() {
         let mut tokens = Vec::new();
         let mut eof_start;
@@ -208,18 +205,16 @@ pub fn parse_delimited<'s, T: TokenKind<'s>>(
             }
 
             // Check for EOF (unclosed delimited sequence)
-            let token = T::next(cursor);
+            let token = T::next(cursor, logger);
             if token.is_eof() {
-                return Some(Err(ParseError {
-                    msg: format!("expected '{close}', got {}", token),
-                    span: cursor.span_from(eof_start),
-                }));
+                logger.expected(close, &token, token.span());
+                break;
             }
 
             // Otherwise push this token and keep looking
             tokens.push(token);
         }
-        Some(Ok(TokenTree::new(tokens, (Some(close), cursor.span_from(eof_start)))))
+        Some(TokenTree::new(tokens, (Some(close), cursor.span_from(eof_start))))
     }
     else {
         None
@@ -367,7 +362,7 @@ macro_rules! def_delimited_node {
                     I: TokenIterator<'s, Self::TokenKind>
             {
                 let start = tokenizer.start();
-                let token = tokenizer.next();
+                let token = tokenizer.next(logger);
                 if token.as_token().is_some_and(|t| t.$is_func()) {
                     Self {
                         item: Some(

@@ -1,8 +1,7 @@
 use std::path::Path;
-use prolangine_macros::NodeKind;
 use strum::EnumString;
 use prolangine::{
-    log::{Level, Message}, parse::{
+    log::Logger, parse::{
         common::{
             parse_c_like_num,
             parse_c_like_string,
@@ -53,7 +52,7 @@ impl<'s> TokenKind<'s> for ExampleLanguageToken<'s> {
         }
     }
 
-    fn next(cursor: &mut SrcCursor<'s>) -> Token<'s, ExampleLanguageToken<'s>> {
+    fn next(cursor: &mut SrcCursor<'s>, logger: &mut Logger<'s>) -> Token<'s, ExampleLanguageToken<'s>> {
         let start = cursor.pos();
 
         // Check for EOF
@@ -68,43 +67,38 @@ impl<'s> TokenKind<'s> for ExampleLanguageToken<'s> {
 
         // Numbers
         if let Some((num, _)) = parse_c_like_num(cursor) {
-            return num
-                .parse()
-                .map(|n| Token::new(Self::Number(n), cursor.span_from(start)))
-                .unwrap_or(Token::new_error(
-                    &format!("invalid number {num}"),
-                    cursor.span_from(start),
-                ));
+            return match num.parse() {
+                Ok(n) => Token::new(Self::Number(n), cursor.span_from(start)),
+                Err(e) => {
+                    logger.error(format!("invalid number {num} ({e})"), cursor.span_from(start));
+                    Token::new(Self::Number(0.0), cursor.span_from(start))
+                }
+            }
         }
 
         // String literal
-        if let Some(res) = parse_c_like_string(cursor) {
-            return match res {
-                Ok(str)  => Token::new(Self::String(str), cursor.span_from(start)),
-                Err(err) => Token::new_error(&err.msg, err.span),
-            };
+        if let Some(str) = parse_c_like_string(cursor, logger) {
+            return Token::new(Self::String(str), cursor.span_from(start));
         }
 
         // Operators
         if let Some(op) = parse_matching(is_op_char, cursor) {
             return match ExampleOp::try_from(op) {
                 Ok(op)   => Token::new(Self::Op(op), cursor.span_from(start)),
-                Err(err) => Token::new_error(&err.to_string(), cursor.span_from(start)),
+                Err(err) => {
+                    logger.error(err.to_string(), cursor.span_from(start));
+                    Token::new(Self::Op(ExampleOp::Plus), cursor.span_from(start))
+                }
             };
         }
 
         // Parenthesis
-        if let Some(res) = parse_delimited("(", ")", cursor) {
-            return match res {
-                Ok(tree) => Token::new(Self::Parenthesis(tree), cursor.span_from(start)),
-                Err(err) => Token::new_error(&err.msg, err.span),
-            };
+        if let Some(tree) = parse_delimited("(", ")", cursor, logger) {
+            return Token::new(Self::Parenthesis(tree), cursor.span_from(start));
         }
 
-        Token::new_error(
-            &format!("invalid character '{}'", cursor.next().unwrap()),
-            cursor.span_from(start),
-        )
+        logger.error(format!("invalid character '{}'", cursor.next().unwrap()), cursor.span_from(start));
+        Token::new(ExampleLanguageToken::Op(ExampleOp::Assign), cursor.span_from(start))
     }
 }
 
@@ -143,16 +137,45 @@ impl<'s> NodeKind<'s> for AtomExpr<'s> {
                 Some(ExampleLanguageToken::String(n)) => Self::String(n.to_string(), token.span()),
                 Some(ExampleLanguageToken::Number(n)) => Self::Number(*n, token.span()),
                 _ => {
-                    logger.log(Message::new(Level::Error, format!("expected expression, got {token}"), token.span()));
-                    Self::Number(0.0, Span::builtin())
+                    logger.expected("expression", &token, token.span());
+                    Self::Number(0.0, token.span())
                 }
             }
+        }
+    }
+    fn peek<I>(tokenizer: &I) -> bool
+        where
+            Self: Sized,
+            I: prolangine::parse::token::TokenIterator<'s, Self::TokenKind>
+    {
+
+        if Parenthesized::<'s, ExampleLanguageToken<'s>, Box<Expr<'s>>>::peek(tokenizer) {
+            true
+        }
+        else {
+            matches!(
+                tokenizer.peek().as_token(),
+                Some(ExampleLanguageToken::String(_) | ExampleLanguageToken::Number(_))
+            )
+        }
+    }
+    fn children(&self) -> Vec<&dyn NodeKind<'s, TokenKind = Self::TokenKind>> {
+        match self {
+            Self::Closed(e) => e.children(),
+            Self::String(_, _) => vec![],
+            Self::Number(_, _) => vec![],
+        }
+    }
+    fn span(&self) -> Span<'s> {
+        match self {
+            Self::Closed(e) => e.span(),
+            Self::String(_, s) => s.clone(),
+            Self::Number(_, s) => s.clone(),
         }
     }
 }
 
 #[derive(Debug)]
-#[parse(expected = "expression")]
 pub enum Expr<'s> {
     Atom(AtomExpr<'s>),
 }
@@ -168,7 +191,26 @@ impl<'s> NodeKind<'s> for Expr<'s> {
             Self::Atom(AtomExpr::parse(tokenizer, logger))
         }
         else {
-            logger.log();
+            let token = Token::<'s, ExampleLanguageToken<'s>>::parse(tokenizer, logger);
+            logger.expected("expression", &token, token.span());
+            Self::Atom(AtomExpr::Number(0.0, token.span()))
+        }
+    }
+    fn peek<I>(tokenizer: &I) -> bool
+        where
+            Self: Sized,
+            I: prolangine::parse::token::TokenIterator<'s, Self::TokenKind>
+    {
+        AtomExpr::peek(tokenizer)
+    }
+    fn children(&self) -> Vec<&dyn NodeKind<'s, TokenKind = Self::TokenKind>> {
+        match self {
+            Self::Atom(e) => e.children(),
+        }
+    }
+    fn span(&self) -> Span<'s> {
+        match self {
+            Self::Atom(e) => e.span(),
         }
     }
 }
@@ -193,7 +235,6 @@ impl<'s> DebugEq for Token<'s, ExampleLanguageToken<'s>> {
                 },
                 (_, _) => false,
             },
-            (ParsedTokenKind::Error(_), ParsedTokenKind::Error(_)) => true,
             (ParsedTokenKind::EOF(_), ParsedTokenKind::EOF(_)) => true,
             (_, _) => false,
         };
@@ -223,11 +264,23 @@ impl<'s> DebugEq for Vec<Token<'s, ExampleLanguageToken<'s>>> {
 #[test]
 fn parse_source_from_file() {
     let src = Src::from_file(Path::new("tests/src/test.example")).expect("Unable to read source");
-    let tokens = src.tokenize::<ExampleLanguageToken>();
-    for token in tokens {
-        if token.is_error() {
-            panic!("error token encountered: {token:?}");
-        }
+    let mut logger = Logger::default();
+    src.tokenize::<ExampleLanguageToken>(&mut logger);
+    if logger.error_count() > 0 {
+        panic!("tokenization produced errors");
+    }
+}
+
+#[test]
+#[should_panic]
+fn parse_source_fail() {
+    let src = Src::from_memory("test", r#"
+        a = @
+    "#);
+    let mut logger = Logger::default();
+    src.tokenize::<ExampleLanguageToken>(&mut logger);
+    if logger.error_count() > 0 {
+        panic!("tokenization produced errors");
     }
 }
 
@@ -238,7 +291,8 @@ fn parse_source_from_memory() {
         print(num + 4)
         print("hi everyone")
     "#);
-    let tokens = src.tokenize::<ExampleLanguageToken>();
+    let mut logger = Logger::default();
+    let tokens = src.tokenize::<ExampleLanguageToken>(&mut logger);
     let result = tokens.debug_eq(
         vec![
             ExampleLanguageToken::Ident("num".into()),
@@ -263,6 +317,6 @@ fn parse_source_from_memory() {
 fn glob_source() {
     let codebase = Codebase::new_from_path(Path::new("tests/src"), &["example"]).expect("Unable to create codebase");
     for src in &codebase {
-        let _tokens = src.tokenize::<ExampleLanguageToken>();
+        let _tokens = src.tokenize::<ExampleLanguageToken>(&mut Logger::default());
     }
 }

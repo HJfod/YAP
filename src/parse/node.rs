@@ -27,12 +27,12 @@ pub trait NodeKind<'s>: Debug {
 
 impl<'s, T: TokenKind<'s>> NodeKind<'s> for Token<'s, T> {
     type TokenKind = T;
-    fn parse<I>(tokenizer: &mut I, _logger: &mut Logger<'s>) -> Self
+    fn parse<I>(tokenizer: &mut I, logger: &mut Logger<'s>) -> Self
         where
             Self: Sized,
             I: TokenIterator<'s, Self::TokenKind>
     {
-        tokenizer.next()
+        tokenizer.next(logger)
     }
     fn peek<I>(_tokenizer: &I) -> bool
         where

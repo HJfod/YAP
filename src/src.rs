@@ -9,7 +9,7 @@ use std::{
     ops::Range,
     path::{Path, PathBuf},
 };
-use crate::parse::token::{Token, TokenIterator, TokenKind, Tokenizer};
+use crate::{log::Logger, parse::token::{Token, TokenIterator, TokenKind, Tokenizer}};
 
 pub enum Underline {
     /// Error squiggle
@@ -189,11 +189,11 @@ impl Src {
     }
 
     /// Tokenize this source file according to the Language's token type
-    pub fn tokenize<'s, T: TokenKind<'s>>(&'s self) -> Vec<Token<'s, T>> {
-        let mut tokenizer = Tokenizer::new(self);
+    pub fn tokenize<'s, T: TokenKind<'s>>(&'s self, logger: &mut Logger<'s>) -> Vec<Token<'s, T>> {
+        let mut tokenizer = Tokenizer::new(self, logger);
         let mut res = Vec::new();
         loop {
-            let token = tokenizer.next();
+            let token = tokenizer.next(logger);
             if token.is_eof() {
                 break;
             }
