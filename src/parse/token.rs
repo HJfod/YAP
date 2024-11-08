@@ -156,17 +156,17 @@ impl<'s, T: TokenKind<'s>> Tokenizer<'s, T> {
 }
 impl<'s, T: TokenKind<'s>> TokenIterator<'s, T> for Tokenizer<'s, T> {
     fn next(&mut self, logger: &mut Logger<'s>) -> Token<'s, T> {
-        self.last_end = self.next.span().1.end;
+        self.last_end = self.next.span().end();
         std::mem::replace(&mut self.next, Self::fetch_next(&mut self.cursor, logger))
     }
     fn peek(&self) -> &Token<'s, T> {
         &self.next
     }
     fn start(&self) -> usize {
-        self.next.span().1.start
+        self.next.span().start()
     }
     fn span_from(&self, start: usize) -> Span<'s> {
-       Span(self.cursor.src(), start..self.last_end)
+       self.cursor.src().span(start..self.last_end)
     }
     fn src(&self) -> &'s Src {
         self.cursor.src()
@@ -222,7 +222,7 @@ impl<'s, T: TokenKind<'s>> TokenTree<'s, T> {
 
 impl<'s, T: TokenKind<'s>> TokenIterator<'s, T> for TokenTree<'s, T> {
     fn next(&mut self, _logger: &mut Logger<'s>) -> Token<'s, T> {
-        self.last_end = self.next.span().1.end;
+        self.last_end = self.next.span().end();
         std::mem::replace(
             &mut self.next,
             Self::fetch_next(&mut self.tokens, (self.eof.0.as_deref(), self.eof.1.clone()))
@@ -232,12 +232,12 @@ impl<'s, T: TokenKind<'s>> TokenIterator<'s, T> for TokenTree<'s, T> {
         &self.next
     }
     fn start(&self) -> usize {
-        self.next.span().1.start
+        self.next.span().start()
     }
     fn span_from(&self, start: usize) -> Span<'s> {
-       Span(self.next.span().0, start..self.last_end)
+       self.next.span().src().span(start..self.last_end)
     }
     fn src(&self) -> &'s Src {
-        self.next.span().0
+        self.next.span().src()
     }
 }

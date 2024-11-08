@@ -110,7 +110,7 @@ pub fn parse_c_like_string<'s>(cursor: &mut SrcCursor<'s>, logger: &mut Logger<'
         let mut escaped = String::new();
         loop {
             let Some(c) = cursor.next() else {
-                logger.error("unterminated string literal", Span(cursor.src(), cursor.pos()..cursor.pos()));
+                logger.error("unterminated string literal", cursor.src().span(cursor.pos()..cursor.pos()));
                 break;
             };
             if c == '"' {
@@ -128,14 +128,14 @@ pub fn parse_c_like_string<'s>(cursor: &mut SrcCursor<'s>, logger: &mut Logger<'
                     Some(c) => {
                         logger.error(
                             format!("invalid escape sequence '\\{c}'"),
-                            Span(cursor.src(), cursor.pos() - 1..cursor.pos()),
+                            cursor.src().span(cursor.pos() - 1..cursor.pos()),
                         );
                         None
                     }
                     None => {
                         logger.error(
                             "expected escape sequence",
-                            Span(cursor.src(), cursor.pos() - 1..cursor.pos()),
+                            cursor.src().span(cursor.pos() - 1..cursor.pos()),
                         );
                         None
                     }
@@ -259,7 +259,7 @@ impl<
         else {
             Self {
                 items: vec![],
-                span: Span(tokenizer.src(), start..start),
+                span: tokenizer.src().span(start..start),
                 _phantom: PhantomData,
             }
         }
@@ -323,7 +323,7 @@ impl<
         else {
             Self {
                 items: vec![],
-                span: Span(tokenizer.src(), start..start),
+                span: tokenizer.src().span(start..start),
                 _phantom: PhantomData,
             }
         }

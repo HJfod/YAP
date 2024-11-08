@@ -37,14 +37,20 @@ impl Underline {
 
 #[derive(Debug)]
 /// Represents a specific span of source code in a `Src`
-pub struct Span<'s>(pub &'s Src, pub Range<usize>);
+pub struct Span<'s>(&'s Src, Range<usize>);
 
 impl<'s> Span<'s> {
-    pub fn builtin() -> Self {
-        Self(Src::builtin(), 0..0)
-    }
     pub fn data(&self) -> &'s str {
         &self.0.data()[self.1.clone()]
+    }
+    pub fn src(&self) -> &'s Src {
+        self.0
+    }
+    pub fn start(&self) -> usize {
+        self.1.start
+    }
+    pub fn end(&self) -> usize {
+        self.1.end
     }
     pub fn underlined(&self, style: Underline) -> String {
         // Get the starting and ending linecols as 0-based indices
@@ -149,15 +155,11 @@ pub fn overall_span<'s, S: IntoIterator<Item = Span<'s>>>(spans: S) -> Option<Sp
 /// A source file of code. Not necessarily a file, can also be an in-memory
 /// stream
 pub enum Src {
-    Builtin,
     Memory { name: String, data: String },
     File { path: PathBuf, data: String },
 }
 
 impl Src {
-    pub fn builtin() -> &'static Self {
-        &Src::Builtin
-    }
     pub fn from_memory<S: Into<String>, D: Into<String>>(name: S, data: D) -> Self {
         Src::Memory {
             name: name.into(),
@@ -172,20 +174,22 @@ impl Src {
     }
     pub fn name(&self) -> String {
         match self {
-            Src::Builtin => String::from("<compiler built-in>"),
             Src::Memory { name, data: _ } => name.clone(),
             Src::File { path, data: _ } => path.to_string_lossy().to_string(),
         }
     }
     pub fn data(&self) -> &str {
         match self {
-            Src::Builtin => "",
             Src::Memory { name: _, data } => data.as_str(),
             Src::File { path: _, data } => data.as_str(),
         }
     }
     pub fn cursor(&self) -> SrcCursor<'_> {
         SrcCursor(self, 0)
+    }
+
+    pub fn span(&self, range: Range<usize>) -> Span {
+        Span(self, range)
     }
 
     /// Tokenize this source file according to the Language's token type
@@ -206,7 +210,6 @@ impl Src {
 impl Debug for Src {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Builtin => f.write_str("Builtin"),
             Self::Memory { name, data: _ } => f.write_fmt(format_args!("Memory({name:?})")),
             Self::File { path, data: _ } => f.write_fmt(format_args!("File({path:?})")),
         }
@@ -221,7 +224,6 @@ impl Display for Src {
 impl PartialEq for Src {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
-            (Src::Builtin, Src::Builtin) => true,
             (Src::Memory { name: a, data: ad }, Src::Memory { name: b, data: bd }) => {
                 a == b && ad == bd
             }
@@ -234,7 +236,6 @@ impl Eq for Src {}
 impl Hash for Src {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         match self {
-            Self::Builtin => 0.hash(state),
             Self::Memory { name, data } => {
                 name.hash(state);
                 data.hash(state);

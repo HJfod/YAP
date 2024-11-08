@@ -303,12 +303,12 @@ fn parse_source_from_memory() {
                 ExampleLanguageToken::Ident("num".into()),
                 ExampleLanguageToken::Op(ExampleOp::Plus),
                 ExampleLanguageToken::Number(4.0),
-            ].into_iter().map(|t| Token::new(t, Span::builtin())).collect(), (Some(")"), Span::builtin()))),
+            ].into_iter().map(|t| Token::new(t, src.span(0..0))).collect(), (Some(")"), src.span(0..0)))),
             ExampleLanguageToken::Ident("print".into()),
             ExampleLanguageToken::Parenthesis(TokenTree::new(vec![
                 ExampleLanguageToken::String("hi everyone".into()),
-            ].into_iter().map(|t| Token::new(t, Span::builtin())).collect(), (Some(")"), Span::builtin()))),
-        ].into_iter().map(|t| Token::new(t, Span::builtin())).collect()
+            ].into_iter().map(|t| Token::new(t, src.span(0..0))).collect(), (Some(")"), src.span(0..0)))),
+        ].into_iter().map(|t| Token::new(t, src.span(0..0))).collect()
     );
     assert!(result.is_ok(), "token stream mismatch: {}", result.unwrap_err());
 }
