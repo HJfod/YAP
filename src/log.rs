@@ -1,4 +1,4 @@
-use crate::src::Span;
+use crate::src::{Codebase, Span};
 use colored::Colorize;
 use std::fmt::{Display, Write};
 
@@ -66,13 +66,13 @@ impl Display for NoteKind {
 }
 
 #[derive(Debug)]
-pub struct Note<'s> {
+pub struct Note {
     info: String,
-    at: Option<Span<'s>>,
+    at: Option<Span>,
     kind: NoteKind,
 }
 
-impl<'s> Note<'s> {
+impl Note {
     pub fn new<S: Into<String>>(info: S, hint: bool) -> Self {
         Self {
             info: info.into(),
@@ -80,49 +80,46 @@ impl<'s> Note<'s> {
             kind: if hint { NoteKind::Hint } else { NoteKind::Note },
         }
     }
-    pub fn new_at<S: Into<String>>(info: S, span: Span<'s>) -> Self {
+    pub fn new_at<S: Into<String>>(info: S, span: Span) -> Self {
         Self {
             info: info.into(),
             at: Some(span),
             kind: NoteKind::Note,
         }
     }
-    pub fn hint<S: Into<String>>(info: S, span: Span<'s>) -> Self {
+    pub fn hint<S: Into<String>>(info: S, span: Span) -> Self {
         Self {
             info: info.into(),
             at: Some(span),
             kind: NoteKind::Hint,
         }
     }
-}
 
-impl<'s> Display for Note<'s> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    pub fn display(&self, codebase: &Codebase) -> String {
         if let Some(ref span) = self.at {
-            write!(
-                f,
+            format!(
                 "{}:\n{}{}",
                 self.kind.to_string().bold(),
-                span.underlined(self.kind.underline_style()),
+                span.underlined(codebase, self.kind.underline_style()),
                 self.info
             )
         }
         else {
-            write!(f, "{}: {}", self.kind.to_string().bold(), self.info)
+            format!("{}: {}", self.kind.to_string().bold(), self.info)
         }
     }
 }
 
 #[derive(Debug)]
-pub struct Message<'s> {
+pub struct Message {
     pub(crate) level: Level,
     info: String,
-    notes: Vec<Note<'s>>,
-    span: Span<'s>,
+    notes: Vec<Note>,
+    span: Span,
 }
 
-impl<'s> Message<'s> {
-    pub fn new<S: Display>(level: Level, info: S, span: Span<'s>) -> Self {
+impl Message {
+    pub fn new<S: Display>(level: Level, info: S, span: Span) -> Self {
         Self {
             level,
             info: info.to_string(),
@@ -130,14 +127,12 @@ impl<'s> Message<'s> {
             span,
         }
     }
-    pub fn note(mut self, note: Note<'s>) -> Self {
+    pub fn note(mut self, note: Note) -> Self {
         self.notes.push(note);
         self
     }
-}
 
-impl<'s> Display for Message<'s> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    pub fn display(&self, codebase: &Codebase) -> String {
         // todo: migrate to https://crates.io/crates/lyneate mayhaps
 
         fn indent(msg: &str) -> String {
@@ -149,66 +144,58 @@ impl<'s> Display for Message<'s> {
             })
         }
 
-        f.write_fmt(format_args!(
+        format!(
             "{}:\n{}{}\n{}",
             self.level,
-            self.span.underlined(self.level.underline_style()),
+            self.span.underlined(codebase, self.level.underline_style()),
             self.info,
             self.notes.iter().fold(String::new(), |mut acc, note| {
-                write!(&mut acc, "\n + {}\n", indent(&note.to_string())).unwrap();
+                write!(&mut acc, "\n + {}\n", indent(&note.display(codebase))).unwrap();
                 acc
             })
-        ))
+        )
     }
 }
 
-pub struct Logger<'s> {
-    #[allow(clippy::type_complexity)]
-    logger: Box<dyn FnMut(Message<'s>)>,
-    error_count: usize,
-    warn_count: usize,
+#[derive(Default)]
+pub struct Logger {
+    messages: Vec<Message>,
 }
 
-impl<'s> std::fmt::Debug for Logger<'s> {
+impl std::fmt::Debug for Logger {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("Logger")
     }
 }
 
-impl<'s> Logger<'s> {
-    pub fn new<F: FnMut(Message<'s>) + 'static>(logger: F) -> Self {
+impl Logger {
+    pub fn new() -> Self {
         Self {
-            logger: Box::from(logger),
-            error_count: 0,
-            warn_count: 0,
+            messages: vec![],
         }
     }
-    #[allow(clippy::should_implement_trait)]
-    pub fn default() -> Self {
-        Self::new(default_console_logger)
-    }
-    pub fn log(&mut self, msg: Message<'s>) {
-        match msg.level {
-            Level::Info => {}
-            Level::Warning => self.warn_count += 1,
-            Level::Error => self.error_count += 1,
+    pub fn release_logs<F: FnMut(Message, &Codebase)>(&mut self, codebase: &Codebase, mut logger: F) {
+        for msg in std::mem::take(&mut self.messages) {
+            logger(msg, codebase);
         }
-        (self.logger)(msg);
     }
-    pub fn error<W: Display>(&mut self, error: W, span: Span<'s>) {
+    pub fn log(&mut self, msg: Message) {
+        self.messages.push(msg);
+    }
+    pub fn error<W: Display>(&mut self, error: W, span: Span) {
         self.log(Message::new(Level::Error, error, span))
     }
-    pub fn expected<W: Display, G: Display>(&mut self, what: W, got: G, span: Span<'s>) {
+    pub fn expected<W: Display, G: Display>(&mut self, what: W, got: G, span: Span) {
         self.log(Message::new(Level::Error, format!("expected {what}, got {got}"), span));
     }
     pub fn error_count(&self) -> usize {
-        self.error_count
+        self.messages.iter().filter(|m| m.level == Level::Error).count()
     }
     pub fn warn_count(&self) -> usize {
-        self.warn_count
+        self.messages.iter().filter(|m| m.level == Level::Warning).count()
     }
 }
 
-pub fn default_console_logger(msg: Message<'_>) {
-    println!("{msg}");
+pub fn default_console_logger(msg: Message, codebase: &Codebase) {
+    println!("{}", msg.display(codebase));
 }

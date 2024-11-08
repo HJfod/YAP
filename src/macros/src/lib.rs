@@ -99,7 +99,7 @@ impl ToTokens for ParseReceiver {
             ast::Data::Enum(data) => {
                 let impl_for_name = &self.ident;
                 tokens.extend(quote! {
-                    impl<'s> prolangine::parse::node::NodeKind<'s> for #impl_for_name <'s> {
+                    impl<'s> prolangine::parse::node::NodeKind for #impl_for_name <'s> {
                         
                     }
                 });

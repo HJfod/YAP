@@ -35,15 +35,21 @@ impl Underline {
     }
 }
 
-#[derive(Debug)]
-/// Represents a specific span of source code in a `Src`
-pub struct Span<'s>(&'s Src, Range<usize>);
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SrcID(usize);
 
-impl<'s> Span<'s> {
-    pub fn data(&self) -> &'s str {
-        &self.0.data()[self.1.clone()]
+impl SrcID {
+    pub fn span(&self, range: Range<usize>) -> Span {
+        Span(*self, range)
     }
-    pub fn src(&self) -> &'s Src {
+}
+
+#[derive(Debug, Clone)]
+/// Represents a specific span of source code in a `Src`
+pub struct Span(SrcID, Range<usize>);
+
+impl Span {
+    pub fn src(&self) -> SrcID {
         self.0
     }
     pub fn start(&self) -> usize {
@@ -52,16 +58,38 @@ impl<'s> Span<'s> {
     pub fn end(&self) -> usize {
         self.1.end
     }
-    pub fn underlined(&self, style: Underline) -> String {
+
+    pub fn fetch_data<'s>(&self, codebase: &'s Codebase) -> &'s str {
+        &codebase.get_src(self.0).data()[self.1.clone()]
+    }
+    pub fn name(&self, codebase: &Codebase) -> String {
+        let src = codebase.get_src(self.0);
+        let lookup = LineColLookup::new(src.data());
+        let start = lookup.get(self.1.start);
+        if self.1.is_empty() {
+            format!("{}:{}:{}", src.name(), start.0, start.1)
+        }
+        else {
+            let end = lookup.get(self.1.end);
+            format!(
+                "{}:{}:{}-{}:{}",
+                src.name(),
+                start.0,
+                start.1,
+                end.0,
+                end.1
+            )
+        }
+    }
+    pub fn underlined(&self, codebase: &Codebase, style: Underline) -> String {
+        let data = self.fetch_data(codebase);
         // Get the starting and ending linecols as 0-based indices
         let sub_tuple = |a: (usize, usize)| (a.0 - 1, a.1 - 1);
-        let lookup = LineColLookup::new(self.0.data());
+        let lookup = LineColLookup::new(data);
         let start = sub_tuple(lookup.get(self.1.start));
         let end = sub_tuple(lookup.get(self.1.end));
 
-        let mut lines = self
-            .0
-            .data()
+        let mut lines = data
             .lines()
             .skip(start.0)
             .take(end.0 - start.0 + 1);
@@ -105,40 +133,13 @@ impl<'s> Span<'s> {
             "{}{}{}\n{}",
             " ".repeat(padding),
             "--> ".black(),
-            self.to_string().black(),
+            data.black(),
             underlined
         )
     }
 }
 
-impl Clone for Span<'_> {
-    fn clone(&self) -> Self {
-        Self(self.0, self.1.clone())
-    }
-}
-impl Display for Span<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let lookup = LineColLookup::new(self.0.data());
-        let start = lookup.get(self.1.start);
-        if self.1.is_empty() {
-            write!(f, "{}:{}:{}", self.0.name(), start.0, start.1)
-        }
-        else {
-            let end = lookup.get(self.1.end);
-            write!(
-                f,
-                "{}:{}:{}-{}:{}",
-                self.0.name(),
-                start.0,
-                start.1,
-                end.0,
-                end.1
-            )
-        }
-    }
-}
-
-pub fn overall_span<'s, S: IntoIterator<Item = Span<'s>>>(spans: S) -> Option<Span<'s>> {
+pub fn overall_span<S: IntoIterator<Item = Span>>(spans: S) -> Option<Span> {
     let mut items = spans.into_iter();
     let mut span = items.next()?;
     for Span(_, range) in items {
@@ -155,45 +156,38 @@ pub fn overall_span<'s, S: IntoIterator<Item = Span<'s>>>(spans: S) -> Option<Sp
 /// A source file of code. Not necessarily a file, can also be an in-memory
 /// stream
 pub enum Src {
-    Memory { name: String, data: String },
-    File { path: PathBuf, data: String },
+    Memory { id: SrcID, name: String, data: String },
+    File { id: SrcID, path: PathBuf, data: String },
 }
 
 impl Src {
-    pub fn from_memory<S: Into<String>, D: Into<String>>(name: S, data: D) -> Self {
-        Src::Memory {
-            name: name.into(),
-            data: data.into(),
+    pub fn id(&self) -> SrcID {
+        match self {
+            Self::Memory { id, name: _, data: _ } => *id,
+            Self::File { id, path: _, data: _ } => *id,
         }
-    }
-    pub fn from_file(path: &Path) -> Result<Self, String> {
-        Ok(Src::File {
-            data: fs::read_to_string(path).map_err(|e| format!("Can't read file: {}", e))?,
-            path: path.to_path_buf(),
-        })
     }
     pub fn name(&self) -> String {
         match self {
-            Src::Memory { name, data: _ } => name.clone(),
-            Src::File { path, data: _ } => path.to_string_lossy().to_string(),
+            Src::Memory { id: _, name, data: _ } => name.clone(),
+            Src::File { id: _, path, data: _ } => path.to_string_lossy().to_string(),
         }
     }
     pub fn data(&self) -> &str {
         match self {
-            Src::Memory { name: _, data } => data.as_str(),
-            Src::File { path: _, data } => data.as_str(),
+            Src::Memory { id: _, name: _, data } => data.as_str(),
+            Src::File { id: _, path: _, data } => data.as_str(),
         }
     }
     pub fn cursor(&self) -> SrcCursor<'_> {
         SrcCursor(self, 0)
     }
-
     pub fn span(&self, range: Range<usize>) -> Span {
-        Span(self, range)
+        Span(self.id(), range)
     }
 
     /// Tokenize this source file according to the Language's token type
-    pub fn tokenize<'s, T: TokenKind<'s>>(&'s self, logger: &mut Logger<'s>) -> Vec<Token<'s, T>> {
+    pub fn tokenize<T: TokenKind>(&self, logger: &mut Logger) -> Vec<Token<T>> {
         let mut tokenizer = Tokenizer::new(self, logger);
         let mut res = Vec::new();
         loop {
@@ -210,8 +204,8 @@ impl Src {
 impl Debug for Src {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Memory { name, data: _ } => f.write_fmt(format_args!("Memory({name:?})")),
-            Self::File { path, data: _ } => f.write_fmt(format_args!("File({path:?})")),
+            Self::Memory { id: _, name, data: _ } => f.write_fmt(format_args!("Memory({name:?})")),
+            Self::File { id: _, path, data: _ } => f.write_fmt(format_args!("File({path:?})")),
         }
     }
 }
@@ -223,25 +217,14 @@ impl Display for Src {
 
 impl PartialEq for Src {
     fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (Src::Memory { name: a, data: ad }, Src::Memory { name: b, data: bd }) => {
-                a == b && ad == bd
-            }
-            (Src::File { path: a, data: _ }, Src::File { path: b, data: _ }) => a == b,
-            (_, _) => false,
-        }
+        // SAFETY: Srcs in unrelated codebases should never be compared
+        self.id() == other.id()
     }
 }
 impl Eq for Src {}
 impl Hash for Src {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        match self {
-            Self::Memory { name, data } => {
-                name.hash(state);
-                data.hash(state);
-            }
-            Self::File { path, data: _ } => path.hash(state),
-        }
+        self.id().hash(state)
     }
 }
 
@@ -283,11 +266,14 @@ impl<'s> SrcCursor<'s> {
     pub fn pos(&self) -> usize {
         self.1
     }
-    pub fn span_from(&self, start: usize) -> Span<'s> {
-        Span(self.0, start..self.1)
+    pub fn span_from(&self, start: usize) -> Span {
+        Span(self.0.id(), start..self.1)
+    }
+    pub fn data_from(&self, start: usize) -> &'s str {
+        &self.0.data()[start..self.1]
     }
 }
-impl<'s> Iterator for SrcCursor<'s> {
+impl Iterator for SrcCursor<'_> {
     type Item = char;
     fn next(&mut self) -> Option<Self::Item> {
         self.0.data()[self.1..]
@@ -301,41 +287,48 @@ impl<'s> Iterator for SrcCursor<'s> {
 /// Represents a codebase; i.e. all the source files that result in a single
 /// output
 pub struct Codebase {
-    path: PathBuf,
+    root_path: PathBuf,
     srcs: Vec<Src>,
 }
 
 impl Codebase {
-    /// Loads a codebase from a path. Can be a source file directory for a
-    /// single-file codebase or a directory with deeply nested source files
-    pub fn new_from_path(path: &Path, file_extensions: &[&str]) -> Result<Self, String> {
-        if path.is_file() {
-            return Ok(Codebase {
-                path: path.to_path_buf(),
-                srcs: vec![Src::from_file(path)?],
-            });
-        }
-        if !path.exists() {
-            Err("Directory does not exist".to_string())?;
-        }
-        let srcs = Self::find_src_files(path, file_extensions)?;
-        if srcs.is_empty() {
-            Err("No source files found in directory or its subdirectories".to_string())
-        }
-        else {
-            Ok(Codebase {
-                path: path.to_path_buf(),
-                srcs,
-            })
+    fn next_id(&self) -> SrcID {
+        SrcID(self.srcs.len())
+    }
+
+    /// WARNING: Does not actually add any `Src`s to the `Codebase`!
+    /// Call `Codebase::add_src` or `Codebase::add_src_recursive` afterwards!
+    pub fn new(root_path: &Path) -> Self {
+        Self {
+            root_path: root_path.to_path_buf(),
+            srcs: vec![],
         }
     }
-    fn find_src_files(dir: &Path, file_extensions: &[&str]) -> Result<Vec<Src>, String> {
-        let Ok(files) = std::fs::read_dir(dir)
-        else {
-            return Ok(vec![]);
-        };
-
-        let mut res = vec![];
+    pub fn add_src_from_memory(&mut self, name: &str, data: &str) -> &Src {
+        self.srcs.push(Src::Memory {
+            id: self.next_id(),
+            name: name.into(),
+            data: data.into()
+        });
+        self.srcs.last().unwrap()
+    }
+    pub fn add_src(&mut self, path: &Path) -> Result<&Src, String> {
+        self.srcs.push(Src::File {
+            id: self.next_id(),
+            data: fs::read_to_string(path).map_err(|e| format!("Can't read file: {}", e))?,
+            path: path.to_path_buf(),
+        });
+        Ok(self.srcs.last().unwrap())
+    }
+    pub fn add_src_recursive(&mut self, path: &Path, file_extensions: &[&str]) -> Result<usize, String> {
+        if !path.exists() {
+            Err("directory does not exist")?;
+        }
+        if !path.is_dir() {
+            Err("path is not a directory")?;
+        }
+        let files = std::fs::read_dir(path).map_err(|e| e.to_string())?;
+        let mut count = 0;
         for file in files {
             let file = file.unwrap();
             let Ok(ty) = file.file_type()
@@ -343,18 +336,23 @@ impl Codebase {
                 continue;
             };
             if ty.is_dir() {
-                res.extend(Self::find_src_files(&file.path(), file_extensions)?);
+                count += self.add_src_recursive(&file.path(), file_extensions)?;
             }
             else if let Some(ext) = file.path().extension() {
                 if file_extensions.iter().any(|e| OsStr::new(e) == ext) {
-                    res.push(Src::from_file(&file.path())?);
+                    self.add_src(&file.path())?;
+                    count += 1;
                 }
             }
         }
-        Ok(res)
+        Ok(count)
     }
-    pub fn path(&self) -> &Path {
-        &self.path
+    pub fn get_src(&self, id: SrcID) -> &Src {
+        self.srcs.get(id.0).unwrap()
+    }
+
+    pub fn root_path(&self) -> &Path {
+        &self.root_path
     }
     pub fn iter(&self) -> impl Iterator<Item = &Src> {
         self.into_iter()

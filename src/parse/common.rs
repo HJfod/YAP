@@ -7,29 +7,29 @@ use unicode_xid::UnicodeXID;
 
 use super::{node::NodeKind, token::{TokenIterator, TokenKind, TokenTree}};
 
-pub trait CommonDelimiters<'s>: TokenKind<'s> {
+pub trait CommonDelimiters: TokenKind {
     fn is_parenthesized(&self) -> bool {
         false
     }
-    fn parenthesized(self) -> Option<TokenTree<'s, Self>> {
+    fn parenthesized(self) -> Option<TokenTree<Self>> {
         None
     }
     fn is_bracketed(&self) -> bool {
         false
     }
-    fn bracketed(self) -> Option<TokenTree<'s, Self>> {
+    fn bracketed(self) -> Option<TokenTree<Self>> {
         None
     }
     fn is_braced(&self) -> bool {
         false
     }
-    fn braced(self) -> Option<TokenTree<'s, Self>> {
+    fn braced(self) -> Option<TokenTree<Self>> {
         None
     }
     fn is_angle_bracketed(&self) -> bool {
         false
     }
-    fn angle_bracketed(self) -> Option<TokenTree<'s, Self>> {
+    fn angle_bracketed(self) -> Option<TokenTree<Self>> {
         None
     }
 }
@@ -64,7 +64,7 @@ pub fn parse_c_like_word<'s>(cursor: &mut SrcCursor<'s>) -> Option<&'s str> {
     let start = cursor.pos();
     if cursor.next_if(UnicodeXID::is_xid_start).is_some() {
         while cursor.next_if(UnicodeXID::is_xid_continue).is_some() {}
-        Some(cursor.span_from(start).data())
+        Some(cursor.data_from(start))
     }
     else {
         None
@@ -96,7 +96,7 @@ pub fn parse_c_like_num<'s>(cursor: &mut SrcCursor<'s>) -> Option<(&'s str, bool
         else {
             false
         };
-        Some((cursor.span_from(start).data(), is_decimal))
+        Some((cursor.data_from(start), is_decimal))
     }
     else {
         None
@@ -104,7 +104,7 @@ pub fn parse_c_like_num<'s>(cursor: &mut SrcCursor<'s>) -> Option<(&'s str, bool
 }
 
 /// Parses a C-like string literal. Supports common escaping characters
-pub fn parse_c_like_string<'s>(cursor: &mut SrcCursor<'s>, logger: &mut Logger<'s>) -> Option<String> {
+pub fn parse_c_like_string(cursor: &mut SrcCursor, logger: &mut Logger) -> Option<String> {
     // todo: smart multiline string literal
     if cursor.next_if(|c| c == '"').is_some() {
         let mut escaped = String::new();
@@ -166,7 +166,7 @@ pub fn parse_exact<'s>(text: &str, cursor: &mut SrcCursor<'s>) -> Option<&'s str
     for _ in text.chars() {
         cursor.next();
     }
-    Some(cursor.span_from(start).data())
+    Some(cursor.data_from(start))
 }
 
 /// Parse characters matching a predicate until one that doesn't match is 
@@ -177,7 +177,7 @@ pub fn parse_matching<'s, F>(matcher: F, cursor: &mut SrcCursor<'s>) -> Option<&
     let start = cursor.pos();
     if cursor.next_if(&matcher).is_some() {
         while cursor.next_if(&matcher).is_some() {}
-        Some(cursor.span_from(start).data())
+        Some(cursor.data_from(start))
     }
     else {
         None
@@ -185,12 +185,12 @@ pub fn parse_matching<'s, F>(matcher: F, cursor: &mut SrcCursor<'s>) -> Option<&
 }
 
 /// Parse a delimited sequence
-pub fn parse_delimited<'s, T: TokenKind<'s>>(
+pub fn parse_delimited<T: TokenKind>(
     open: &str,
     close: &str,
-    cursor: &mut SrcCursor<'s>,
-    logger: &mut Logger<'s>,
-) -> Option<TokenTree<'s, T>> {
+    cursor: &mut SrcCursor,
+    logger: &mut Logger,
+) -> Option<TokenTree<T>> {
     if parse_exact(open, cursor).is_some() {
         let mut tokens = Vec::new();
         let mut eof_start;
@@ -225,23 +225,22 @@ pub fn parse_delimited<'s, T: TokenKind<'s>>(
 /// * **NOTE**: Use `SeparatedOptTrailing` if you want to allow trailing separators
 /// * **NOTE**: the separator nodes are discarded and aren't actually stored!
 #[derive(Debug)]
-pub struct Separated<'s, N: NodeKind<'s>, S: NodeKind<'s>> {
+pub struct Separated<N: NodeKind, S: NodeKind> {
     items: Vec<N>,
-    span: Span<'s>,
+    span: Span,
     _phantom: PhantomData<S>,
 }
 
 impl<
-    's,
-    T: TokenKind<'s>,
-    N: NodeKind<'s, TokenKind = T>,
-    S: NodeKind<'s, TokenKind = T>
-> NodeKind<'s> for Separated<'s, N, S> {
+    T: TokenKind,
+    N: NodeKind<TokenKind = T>,
+    S: NodeKind<TokenKind = T>
+> NodeKind for Separated<N, S> {
     type TokenKind = T;
-    fn parse<I>(tokenizer: &mut I, logger: &mut Logger<'s>) -> Self
+    fn parse<I>(tokenizer: &mut I, logger: &mut Logger) -> Self
         where
             Self: Sized,
-            I: TokenIterator<'s, T>
+            I: TokenIterator<T>
     {
         let start = tokenizer.start();
         if N::peek(tokenizer) {
@@ -267,16 +266,16 @@ impl<
     fn peek<I>(tokenizer: &I) -> bool
         where
             Self: Sized,
-            I: TokenIterator<'s, T>
+            I: TokenIterator<T>
     {
         N::peek(tokenizer)
     }
-    fn children(&self) -> Vec<&dyn NodeKind<'s, TokenKind = T>> {
+    fn children(&self) -> Vec<&dyn NodeKind<TokenKind = T>> {
         self.items.iter()
-            .map(|n| n as &dyn NodeKind<'s, TokenKind = T>)
+            .map(|n| n as &dyn NodeKind<TokenKind = T>)
             .collect()
     }
-    fn span(&self) -> Span<'s> {
+    fn span(&self) -> Span {
         self.span.clone()
     }
 }
@@ -284,23 +283,22 @@ impl<
 /// List of nodes separated by another node with optional trailing separator
 /// * **NOTE**: the separator nodes are discarded and aren't actually stored!
 #[derive(Debug)]
-pub struct SeparatedOptTrailing<'s, N: NodeKind<'s>, S: NodeKind<'s>> {
+pub struct SeparatedOptTrailing<N: NodeKind, S: NodeKind> {
     items: Vec<N>,
-    span: Span<'s>,
+    span: Span,
     _phantom: PhantomData<S>,
 }
 
 impl<
-    's,
-    T: TokenKind<'s>,
-    N: NodeKind<'s, TokenKind = T>,
-    S: NodeKind<'s, TokenKind = T>
-> NodeKind<'s> for SeparatedOptTrailing<'s, N, S> {
+    T: TokenKind,
+    N: NodeKind<TokenKind = T>,
+    S: NodeKind<TokenKind = T>
+> NodeKind for SeparatedOptTrailing<N, S> {
     type TokenKind = T;
-    fn parse<I>(tokenizer: &mut I, logger: &mut Logger<'s>) -> Self
+    fn parse<I>(tokenizer: &mut I, logger: &mut Logger) -> Self
         where
             Self: Sized,
-            I: TokenIterator<'s, T>
+            I: TokenIterator<T>
     {
         let start = tokenizer.start();
         if N::peek(tokenizer) {
@@ -331,16 +329,16 @@ impl<
     fn peek<I>(tokenizer: &I) -> bool
         where
             Self: Sized,
-            I: TokenIterator<'s, T>
+            I: TokenIterator<T>
     {
         N::peek(tokenizer)
     }
-    fn children(&self) -> Vec<&dyn NodeKind<'s, TokenKind = T>> {
+    fn children(&self) -> Vec<&dyn NodeKind<TokenKind = T>> {
         self.items.iter()
-            .map(|n| n as &dyn NodeKind<'s, TokenKind = T>)
+            .map(|n| n as &dyn NodeKind<TokenKind = T>)
             .collect()
     }
-    fn span(&self) -> Span<'s> {
+    fn span(&self) -> Span {
         self.span.clone()
     }
 }
@@ -348,18 +346,18 @@ impl<
 macro_rules! def_delimited_node {
     ($name: ident, $is_func: ident, $as_func: ident, $str: literal) => {
         #[derive(Debug)]
-        pub struct $name<'s, T: CommonDelimiters<'s>, N: NodeKind<'s, TokenKind = T>> {
+        pub struct $name<T: CommonDelimiters, N: NodeKind<TokenKind = T>> {
             item: Option<N>,
-            span: Span<'s>,
+            span: Span,
             _phantom: PhantomData<T>,
         }
 
-        impl<'s, T: CommonDelimiters<'s>, N: NodeKind<'s, TokenKind = T>> NodeKind<'s> for $name<'s, T, N> {
+        impl<T: CommonDelimiters, N: NodeKind<TokenKind = T>> NodeKind for $name<T, N> {
             type TokenKind = T;
-            fn parse<I>(tokenizer: &mut I, logger: &mut Logger<'s>) -> Self
+            fn parse<I>(tokenizer: &mut I, logger: &mut Logger) -> Self
                 where
                     Self: Sized,
-                    I: TokenIterator<'s, Self::TokenKind>
+                    I: TokenIterator<Self::TokenKind>
             {
                 let start = tokenizer.start();
                 let token = tokenizer.next(logger);
@@ -390,14 +388,14 @@ macro_rules! def_delimited_node {
             fn peek<I>(tokenizer: &I) -> bool
                 where
                     Self: Sized,
-                    I: TokenIterator<'s, Self::TokenKind>
+                    I: TokenIterator<Self::TokenKind>
             {
                 tokenizer.peek().as_token().is_some_and(|t| t.$is_func())
             }
-            fn children(&self) -> Vec<&dyn NodeKind<'s, TokenKind = Self::TokenKind>> {
+            fn children(&self) -> Vec<&dyn NodeKind<TokenKind = Self::TokenKind>> {
                 self.item.as_ref().map(|n| n.children()).unwrap_or_default()
             }
-            fn span(&self) -> Span<'s> {
+            fn span(&self) -> Span {
                 self.span.clone()
             }
         }

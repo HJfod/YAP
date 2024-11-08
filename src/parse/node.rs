@@ -4,87 +4,87 @@ use crate::{log::Logger, src::Span};
 
 use super::token::{Token, TokenIterator, TokenKind};
 
-pub trait NodeKind<'s>: Debug { 
-    type TokenKind: TokenKind<'s>;
+pub trait NodeKind: Debug { 
+    type TokenKind: TokenKind;
 
-    fn parse<I>(tokenizer: &mut I, logger: &mut Logger<'s>) -> Self
+    fn parse<I>(tokenizer: &mut I, logger: &mut Logger) -> Self
         where
             Self: Sized,
-            I: TokenIterator<'s, Self::TokenKind>;
+            I: TokenIterator<Self::TokenKind>;
 
     /// Check if this type is posisbly coming up on the token stream at a position
     fn peek<I>(tokenizer: &I) -> bool
         where
             Self: Sized,
-            I: TokenIterator<'s, Self::TokenKind>;
+            I: TokenIterator<Self::TokenKind>;
 
     /// Get the children of this AST node
-    fn children(&self) -> Vec<&dyn NodeKind<'s, TokenKind = Self::TokenKind>>;
+    fn children(&self) -> Vec<&dyn NodeKind<TokenKind = Self::TokenKind>>;
 
     /// Get the span (raw source code string) of this node
-    fn span(&self) -> Span<'s>;
+    fn span(&self) -> Span;
 }
 
-impl<'s, T: TokenKind<'s>> NodeKind<'s> for Token<'s, T> {
+impl<T: TokenKind> NodeKind for Token<T> {
     type TokenKind = T;
-    fn parse<I>(tokenizer: &mut I, logger: &mut Logger<'s>) -> Self
+    fn parse<I>(tokenizer: &mut I, logger: &mut Logger) -> Self
         where
             Self: Sized,
-            I: TokenIterator<'s, Self::TokenKind>
+            I: TokenIterator<Self::TokenKind>
     {
         tokenizer.next(logger)
     }
     fn peek<I>(_tokenizer: &I) -> bool
         where
             Self: Sized,
-            I: TokenIterator<'s, Self::TokenKind>
+            I: TokenIterator<Self::TokenKind>
     {
         true
     }
-    fn children(&self) -> Vec<&dyn NodeKind<'s, TokenKind = Self::TokenKind>> {
+    fn children(&self) -> Vec<&dyn NodeKind<TokenKind = Self::TokenKind>> {
         vec![]
     }
-    fn span(&self) -> Span<'s> {
+    fn span(&self) -> Span {
         self.span()
     }
 }
 
-impl<'s, T: NodeKind<'s>> NodeKind<'s> for Box<T> {
+impl<T: NodeKind> NodeKind for Box<T> {
     type TokenKind = T::TokenKind;
-    fn parse<I>(tokenizer: &mut I, logger: &mut Logger<'s>) -> Self
+    fn parse<I>(tokenizer: &mut I, logger: &mut Logger) -> Self
         where
             Self: Sized,
-            I: TokenIterator<'s, Self::TokenKind>
+            I: TokenIterator<Self::TokenKind>
     {
         Box::from(T::parse(tokenizer, logger))
     }
     fn peek<I>(tokenizer: &I) -> bool
         where
             Self: Sized,
-            I: TokenIterator<'s, Self::TokenKind>
+            I: TokenIterator<Self::TokenKind>
     {
         T::peek(tokenizer)
     }
-    fn children(&self) -> Vec<&dyn NodeKind<'s, TokenKind = Self::TokenKind>> {
+    fn children(&self) -> Vec<&dyn NodeKind<TokenKind = Self::TokenKind>> {
         self.as_ref().children()
     }
-    fn span(&self) -> Span<'s> {
+    fn span(&self) -> Span {
         self.as_ref().span()
     }
 }
 
 #[derive(Debug)]
-pub struct Maybe<'s, N: NodeKind<'s>> {
+pub struct Maybe<N: NodeKind> {
     node: Option<N>,
-    span: Span<'s>,
+    span: Span,
 }
 
-impl<'s, N: NodeKind<'s>> NodeKind<'s> for Maybe<'s, N> {
+impl<N: NodeKind> NodeKind for Maybe<N> {
     type TokenKind = N::TokenKind;
-    fn parse<I>(tokenizer: &mut I, logger: &mut Logger<'s>) -> Self
+    fn parse<I>(tokenizer: &mut I, logger: &mut Logger) -> Self
         where
             Self: Sized,
-            I: TokenIterator<'s, Self::TokenKind>
+            I: TokenIterator<Self::TokenKind>
     {
         let start = tokenizer.start();
         Self {
@@ -95,17 +95,17 @@ impl<'s, N: NodeKind<'s>> NodeKind<'s> for Maybe<'s, N> {
     fn peek<I>(tokenizer: &I) -> bool
         where
             Self: Sized,
-            I: TokenIterator<'s, Self::TokenKind>
+            I: TokenIterator<Self::TokenKind>
     {
         N::peek(tokenizer)
     }
 
-    fn children(&self) -> Vec<&dyn NodeKind<'s, TokenKind = Self::TokenKind>> {
+    fn children(&self) -> Vec<&dyn NodeKind<TokenKind = Self::TokenKind>> {
         self.node.as_ref()
-            .map(|n| vec![n as &dyn NodeKind<'s, TokenKind = Self::TokenKind>])
+            .map(|n| vec![n as &dyn NodeKind<TokenKind = Self::TokenKind>])
             .unwrap_or_default()
     }
-    fn span(&self) -> Span<'s> {
+    fn span(&self) -> Span {
         self.span.clone()
     }
 }
