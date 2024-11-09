@@ -182,12 +182,6 @@ impl Logger {
     pub fn log(&mut self, msg: Message) {
         self.messages.push(msg);
     }
-    pub fn error<W: Display>(&mut self, error: W, span: Span) {
-        self.log(Message::new(Level::Error, error, span))
-    }
-    pub fn expected<W: Display, G: Display>(&mut self, what: W, got: G, span: Span) {
-        self.log(Message::new(Level::Error, format!("expected {what}, got {got}"), span));
-    }
     pub fn error_count(&self) -> usize {
         self.messages.iter().filter(|m| m.level == Level::Error).count()
     }

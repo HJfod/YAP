@@ -1,10 +1,14 @@
-use crate::log::{Level, Logger, Message};
 use crate::src::{Span, Src, SrcCursor, SrcID};
 use std::fmt::Debug;
 use std::fmt::Display;
 
 use super::common::skip_c_like_comments;
-use super::node::NodeKind;
+use super::node::{Node, NodeKind, Parse};
+
+pub trait DisplayName {
+    /// Get the display name
+    fn display_name(&self) -> String;
+}
 
 /// The main trait for introducing a custom syntax for a language. The
 /// language's token kind should implement this trait.
@@ -16,14 +20,11 @@ use super::node::NodeKind;
 /// token type must be able to encode an optional name for the EOF (such as
 /// "closing brace"), since EOF does not necessarily mean end-of-file but can
 /// also mean end-of-subtree
-pub trait TokenKind: Debug + Sized {
-    /// Get the display name for this token
-    fn display_name(&self) -> String;
-
+pub trait TokenKind: Debug + Sized + DisplayName {
     /// Get the next token in the source iterator. This method is **not required**
     /// to run [`TokenKind::skip_to_next`]; it may assume that the next token
     /// starts where the cursor is currently pointing at
-    fn next(cursor: &mut SrcCursor, logger: &mut Logger) -> Token<Self>;
+    fn next(cursor: &mut SrcCursor) -> Token<Self>;
 
     /// Skip to the next token; by default skips whitespace and C-like comments
     /// (`// line comment` and `/* block comment */`)
@@ -36,6 +37,7 @@ pub trait TokenKind: Debug + Sized {
 pub enum ParsedTokenKind<T: TokenKind> {
     Token(T),
     EOF(Option<String>),
+    Error(String),
 }
 
 #[derive(Debug)]
@@ -57,17 +59,38 @@ impl<T: TokenKind> Token<T> {
             span,
         }
     }
+    pub fn new_error<S: Display>(msg: S, span: Span) -> Self {
+        Self {
+            kind: ParsedTokenKind::Error(msg.to_string()),
+            span,
+        }
+    }
+    pub fn expected<W: Display, G: Display>(what: W, got: G, span: Span) -> Self {
+        Self {
+            kind: ParsedTokenKind::Error(format!("expected {what}, got {got}")),
+            span,
+        }
+    }
 
     pub fn as_token(&self) -> Option<&T> {
         match &self.kind {
             ParsedTokenKind::Token(t) => Some(t),
             ParsedTokenKind::EOF(_) => None,
+            ParsedTokenKind::Error(_) => None,
         }
     }
     pub fn as_eof(&self) -> Option<Option<&str>> {
         match &self.kind {
             ParsedTokenKind::Token(_) => None,
             ParsedTokenKind::EOF(s) => Some(s.as_deref()),
+            ParsedTokenKind::Error(_) => None,
+        }
+    }
+    pub fn as_error(&self) -> Option<&str> {
+        match &self.kind {
+            ParsedTokenKind::Token(_) => None,
+            ParsedTokenKind::EOF(_) => None,
+            ParsedTokenKind::Error(msg) => Some(msg),
         }
     }
 
@@ -81,12 +104,21 @@ impl<T: TokenKind> Token<T> {
         match self.kind {
             ParsedTokenKind::Token(t) => Some(t),
             ParsedTokenKind::EOF(_) => None,
+            ParsedTokenKind::Error(_) => None,
         }
     }
     pub fn into_eof(self) -> Option<Option<String>> {
         match self.kind {
             ParsedTokenKind::Token(_) => None,
             ParsedTokenKind::EOF(e) => Some(e),
+            ParsedTokenKind::Error(_) => None,
+        }
+    }
+    pub fn into_error(self) -> Option<String> {
+        match self.kind {
+            ParsedTokenKind::Token(_) => None,
+            ParsedTokenKind::EOF(_) => None,
+            ParsedTokenKind::Error(msg) => Some(msg),
         }
     }
     pub fn span(&self) -> Span {
@@ -96,14 +128,8 @@ impl<T: TokenKind> Token<T> {
     pub fn is_eof(&self) -> bool {
         matches!(self.kind, ParsedTokenKind::EOF(_))
     }
-
-    pub fn eof_name(&self) -> Option<&str> {
-        if let ParsedTokenKind::EOF(Some(ref name)) = self.kind {
-            Some(name.as_str())
-        }
-        else {
-            None
-        }
+    pub fn is_error(&self) -> bool {
+        matches!(self.kind, ParsedTokenKind::Error(_))
     }
 }
 
@@ -114,6 +140,9 @@ impl<T: TokenKind> Display for Token<T> {
             ParsedTokenKind::EOF(name) => {
                 f.write_str(name.as_ref().map(|n| n.as_str()).unwrap_or("end-of-file"))
             }
+            ParsedTokenKind::Error(msg) => {
+                f.write_str(msg)
+            }
         }
     }
 }
@@ -122,7 +151,7 @@ impl<T: TokenKind> Display for Token<T> {
 /// Iterator because it can never return None (and also so `peek` is not `mut`)
 pub trait TokenIterator<T: TokenKind> {
     /// Get the next `Token` in the stream
-    fn next(&mut self, logger: &mut Logger) -> Token<T>;
+    fn next(&mut self) -> Token<T>;
     /// Get the next upcoming `Token` in the stream without consuming it
     fn peek(&self) -> &Token<T>;
     /// Get the start position of the next `Token`
@@ -140,23 +169,23 @@ pub(crate) struct Tokenizer<'s, T: TokenKind> {
     last_end: usize,
 }
 impl<'s, T: TokenKind> Tokenizer<'s, T> {
-    fn fetch_next(cursor: &mut SrcCursor<'s>, logger: &mut Logger) -> Token<T> {
+    fn fetch_next(cursor: &mut SrcCursor<'s>) -> Token<T> {
         T::skip_to_next(cursor);
-        T::next(cursor, logger)
+        T::next(cursor)
     }
-    pub fn new(src: &'s Src, logger: &mut Logger) -> Self {
+    pub fn new(src: &'s Src) -> Self {
         let mut cursor = src.cursor();
         Self {
-            next: Self::fetch_next(&mut cursor, logger),
+            next: Self::fetch_next(&mut cursor),
             cursor,
             last_end: 0,
         }
     }
 }
 impl<'s, T: TokenKind> TokenIterator<T> for Tokenizer<'s, T> {
-    fn next(&mut self, logger: &mut Logger) -> Token<T> {
+    fn next(&mut self) -> Token<T> {
         self.last_end = self.next.span().end();
-        std::mem::replace(&mut self.next, Self::fetch_next(&mut self.cursor, logger))
+        std::mem::replace(&mut self.next, Self::fetch_next(&mut self.cursor))
     }
     fn peek(&self) -> &Token<T> {
         &self.next
@@ -202,25 +231,24 @@ impl<T: TokenKind> TokenTree<T> {
     pub fn into_items(self) -> Vec<Token<T>> {
         self.tokens.collect()
     }
-    pub fn parse_fully_into<N: NodeKind<TokenKind = T>>(mut self, logger: &mut Logger) -> N {
-        let res = N::parse(&mut self, logger);
+    pub fn parse_fully_into<N: NodeKind + Parse<T>>(mut self) -> Node<N> {
+        let res = N::parse(&mut self);
         if !self.next.is_eof() {
-            logger.log(Message::new(
-                Level::Error,
+            return Node::Error(
                 format!(
                     "expected {}, got {}",
                     self.eof.0.unwrap_or("end-of-file".to_string()),
                     self.next
-                ),
+                ), 
                 self.next.span(),
-            ));
+            );
         }
         res
     }
 }
 
 impl<T: TokenKind> TokenIterator<T> for TokenTree<T> {
-    fn next(&mut self, _logger: &mut Logger) -> Token<T> {
+    fn next(&mut self) -> Token<T> {
         self.last_end = self.next.span().end();
         std::mem::replace(
             &mut self.next,

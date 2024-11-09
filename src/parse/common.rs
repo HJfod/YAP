@@ -2,10 +2,10 @@
 
 use std::marker::PhantomData;
 
-use crate::{log::{Level, Logger, Message}, src::{Span, SrcCursor}};
+use crate::src::{Span, SrcCursor};
 use unicode_xid::UnicodeXID;
 
-use super::{node::NodeKind, token::{TokenIterator, TokenKind, TokenTree}};
+use super::{node::{Node, NodeKind, Parse}, token::{Token, TokenIterator, TokenKind, TokenTree}};
 
 pub trait CommonDelimiters: TokenKind {
     fn is_parenthesized(&self) -> bool {
@@ -103,49 +103,51 @@ pub fn parse_c_like_num<'s>(cursor: &mut SrcCursor<'s>) -> Option<(&'s str, bool
     }
 }
 
+pub enum ParsedString {
+    Parsed(String),
+    InvalidEscapeSequences(Vec<(char, Span)>),
+    Unterminated(Span),
+}
+
 /// Parses a C-like string literal. Supports common escaping characters
-pub fn parse_c_like_string(cursor: &mut SrcCursor, logger: &mut Logger) -> Option<String> {
+pub fn parse_c_like_string(cursor: &mut SrcCursor) -> Option<ParsedString> {
     // todo: smart multiline string literal
     if cursor.next_if(|c| c == '"').is_some() {
         let mut escaped = String::new();
+        let mut invalid_sequences = vec![];
         loop {
             let Some(c) = cursor.next() else {
-                logger.error("unterminated string literal", cursor.src().span(cursor.pos()..cursor.pos()));
-                break;
+                return Some(ParsedString::Unterminated(cursor.src().span(cursor.pos()..cursor.pos())));
             };
             if c == '"' {
                 break;
             }
-            if let Some(c) = match c {
+            escaped.push(match c {
                 '\\' => match cursor.next() {
-                    Some('n') => Some('\n'),
-                    Some('t') => Some('\t'),
-                    Some('0') => Some('\0'),
-                    Some('r') => Some('\r'),
-                    Some('\\') => Some('\\'),
-                    Some('\"') => Some('\"'),
-                    Some('\'') => Some('\''),
+                    Some('n') => '\n',
+                    Some('t') => '\t',
+                    Some('0') => '\0',
+                    Some('r') => '\r',
+                    Some('\\') => '\\',
+                    Some('\"') => '\"',
+                    Some('\'') => '\'',
                     Some(c) => {
-                        logger.error(
-                            format!("invalid escape sequence '\\{c}'"),
-                            cursor.src().span(cursor.pos() - 1..cursor.pos()),
-                        );
-                        None
+                        invalid_sequences.push((c, cursor.src().span(cursor.pos() - 1..cursor.pos())));
+                        c
                     }
                     None => {
-                        logger.error(
-                            "expected escape sequence",
-                            cursor.src().span(cursor.pos() - 1..cursor.pos()),
-                        );
-                        None
+                        return Some(ParsedString::Unterminated(cursor.src().span(cursor.pos() - 1..cursor.pos())));
                     }
                 },
-                o => Some(o),
-            } {
-                escaped.push(c);
-            }
+                o => o,
+            });
         }
-        Some(escaped)
+        Some(if !invalid_sequences.is_empty() {
+            ParsedString::InvalidEscapeSequences(invalid_sequences)
+        }
+        else {
+            ParsedString::Parsed(escaped)
+        })
     }
     else {
         None
@@ -189,7 +191,6 @@ pub fn parse_delimited<T: TokenKind>(
     open: &str,
     close: &str,
     cursor: &mut SrcCursor,
-    logger: &mut Logger,
 ) -> Option<TokenTree<T>> {
     if parse_exact(open, cursor).is_some() {
         let mut tokens = Vec::new();
@@ -205,9 +206,9 @@ pub fn parse_delimited<T: TokenKind>(
             }
 
             // Check for EOF (unclosed delimited sequence)
-            let token = T::next(cursor, logger);
+            let token = T::next(cursor);
             if token.is_eof() {
-                logger.expected(close, &token, token.span());
+                tokens.push(Token::expected(close, &token, token.span()));
                 break;
             }
 
@@ -226,41 +227,40 @@ pub fn parse_delimited<T: TokenKind>(
 /// * **NOTE**: the separator nodes are discarded and aren't actually stored!
 #[derive(Debug)]
 pub struct Separated<N: NodeKind, S: NodeKind> {
-    items: Vec<N>,
+    items: Vec<Node<N>>,
     span: Span,
     _phantom: PhantomData<S>,
 }
 
 impl<
     T: TokenKind,
-    N: NodeKind<TokenKind = T>,
-    S: NodeKind<TokenKind = T>
-> NodeKind for Separated<N, S> {
-    type TokenKind = T;
-    fn parse<I>(tokenizer: &mut I, logger: &mut Logger) -> Self
+    N: NodeKind + Parse<T>,
+    S: NodeKind + Parse<T>
+> Parse<T> for Separated<N, S> {
+    fn parse<I>(tokenizer: &mut I) -> Node<Self>
         where
             Self: Sized,
             I: TokenIterator<T>
     {
         let start = tokenizer.start();
         if N::peek(tokenizer) {
-            let mut items = vec![N::parse(tokenizer, logger)];
+            let mut items = vec![N::parse(tokenizer)];
             while S::peek(tokenizer) {
-                S::parse(tokenizer, logger);
-                items.push(N::parse(tokenizer, logger));
+                S::parse(tokenizer);
+                items.push(N::parse(tokenizer));
             }
-            Self {
+            Node::from(Self {
                 items,
                 span: tokenizer.span_from(start),
                 _phantom: PhantomData,
-            }
+            })
         }
         else {
-            Self {
+            Node::from(Self {
                 items: vec![],
                 span: tokenizer.src().span(start..start),
                 _phantom: PhantomData,
-            }
+            })
         }
     }
     fn peek<I>(tokenizer: &I) -> bool
@@ -270,9 +270,11 @@ impl<
     {
         N::peek(tokenizer)
     }
-    fn children(&self) -> Vec<&dyn NodeKind<TokenKind = T>> {
+}
+impl<N: NodeKind, S: NodeKind> NodeKind for Separated<N, S> {
+    fn children(&self) -> Vec<&dyn NodeKind> {
         self.items.iter()
-            .map(|n| n as &dyn NodeKind<TokenKind = T>)
+            .map(|n| n as &dyn NodeKind)
             .collect()
     }
     fn span(&self) -> Span {
@@ -284,46 +286,45 @@ impl<
 /// * **NOTE**: the separator nodes are discarded and aren't actually stored!
 #[derive(Debug)]
 pub struct SeparatedOptTrailing<N: NodeKind, S: NodeKind> {
-    items: Vec<N>,
+    items: Vec<Node<N>>,
     span: Span,
     _phantom: PhantomData<S>,
 }
 
 impl<
     T: TokenKind,
-    N: NodeKind<TokenKind = T>,
-    S: NodeKind<TokenKind = T>
-> NodeKind for SeparatedOptTrailing<N, S> {
-    type TokenKind = T;
-    fn parse<I>(tokenizer: &mut I, logger: &mut Logger) -> Self
+    N: NodeKind + Parse<T>,
+    S: NodeKind + Parse<T>
+> Parse<T> for SeparatedOptTrailing<N, S> {
+    fn parse<I>(tokenizer: &mut I) -> Node<Self>
         where
             Self: Sized,
             I: TokenIterator<T>
     {
         let start = tokenizer.start();
         if N::peek(tokenizer) {
-            let mut items = vec![N::parse(tokenizer, logger)];
+            let mut items = vec![N::parse(tokenizer)];
             while S::peek(tokenizer) {
-                S::parse(tokenizer, logger);
+                S::parse(tokenizer);
                 if N::peek(tokenizer) {
-                    items.push(N::parse(tokenizer, logger));
+                    items.push(N::parse(tokenizer));
                 }
                 else {
                     break;
                 }
             }
-            Self {
+            Node::from(Self {
                 items,
                 span: tokenizer.span_from(start),
                 _phantom: PhantomData,
-            }
+            })
         }
         else {
-            Self {
+            Node::from(Self {
                 items: vec![],
                 span: tokenizer.src().span(start..start),
                 _phantom: PhantomData,
-            }
+            })
         }
     }
     fn peek<I>(tokenizer: &I) -> bool
@@ -333,9 +334,11 @@ impl<
     {
         N::peek(tokenizer)
     }
-    fn children(&self) -> Vec<&dyn NodeKind<TokenKind = T>> {
+}
+impl<N: NodeKind, S: NodeKind> NodeKind for SeparatedOptTrailing<N, S> {
+    fn children(&self) -> Vec<&dyn NodeKind> {
         self.items.iter()
-            .map(|n| n as &dyn NodeKind<TokenKind = T>)
+            .map(|n| n as &dyn NodeKind)
             .collect()
     }
     fn span(&self) -> Span {
@@ -346,54 +349,42 @@ impl<
 macro_rules! def_delimited_node {
     ($name: ident, $is_func: ident, $as_func: ident, $str: literal) => {
         #[derive(Debug)]
-        pub struct $name<T: CommonDelimiters, N: NodeKind<TokenKind = T>> {
-            item: Option<N>,
+        pub struct $name<N: NodeKind> {
+            item: Node<N>,
             span: Span,
-            _phantom: PhantomData<T>,
         }
 
-        impl<T: CommonDelimiters, N: NodeKind<TokenKind = T>> NodeKind for $name<T, N> {
-            type TokenKind = T;
-            fn parse<I>(tokenizer: &mut I, logger: &mut Logger) -> Self
+        impl<T: CommonDelimiters, N: NodeKind + Parse<T>> Parse<T> for $name<N> {
+            fn parse<I>(tokenizer: &mut I) -> Node<Self>
                 where
                     Self: Sized,
-                    I: TokenIterator<Self::TokenKind>
+                    I: TokenIterator<T>
             {
                 let start = tokenizer.start();
-                let token = tokenizer.next(logger);
+                let token = tokenizer.next();
                 if token.as_token().is_some_and(|t| t.$is_func()) {
-                    Self {
-                        item: Some(
-                            token.into_token().unwrap()
-                                .$as_func().unwrap()
-                                .parse_fully_into::<N>(logger)
-                        ),
+                    Node::from(Self {
+                        item: token.into_token().unwrap()
+                            .$as_func().unwrap()
+                            .parse_fully_into::<N>(),
                         span: tokenizer.span_from(start),
-                        _phantom: PhantomData,
-                    }
+                    })
                 }
                 else {
-                    logger.log(Message::new(
-                        Level::Error,
-                        format!(concat!("expected ", $str, ", got {}"), token),
-                        tokenizer.span_from(start),
-                    ));
-                    Self {
-                        item: None,
-                        span: tokenizer.span_from(start),
-                        _phantom: PhantomData,
-                    }
+                    Node::expected($str, &token, tokenizer.span_from(start))
                 }
             }
             fn peek<I>(tokenizer: &I) -> bool
                 where
                     Self: Sized,
-                    I: TokenIterator<Self::TokenKind>
+                    I: TokenIterator<T>
             {
                 tokenizer.peek().as_token().is_some_and(|t| t.$is_func())
             }
-            fn children(&self) -> Vec<&dyn NodeKind<TokenKind = Self::TokenKind>> {
-                self.item.as_ref().map(|n| n.children()).unwrap_or_default()
+        }
+        impl<N: NodeKind> NodeKind for $name<N> {
+            fn children(&self) -> Vec<&dyn NodeKind> {
+                vec![&self.item]
             }
             fn span(&self) -> Span {
                 self.span.clone()

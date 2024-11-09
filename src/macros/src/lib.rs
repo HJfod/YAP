@@ -5,15 +5,13 @@ extern crate syn;
 extern crate quote;
 extern crate darling;
 
-use darling::{FromDeriveInput, ast, FromField, FromVariant};
-use darling::FromMeta;
+use darling::ast::NestedMeta;
+use darling::{ast, FromDeriveInput, FromField, FromMeta, FromVariant};
 use proc_macro::TokenStream;
-use proc_macro2::{TokenStream as TokenStream2, Ident};
-use quote::{quote, quote_spanned, ToTokens};
-use syn::parse::Parse;
-use syn::{Generics, Type, Path};
+use proc_macro2::TokenStream as TokenStream2;
+use quote::{format_ident, quote, ToTokens};
+use syn::{parse_macro_input, Fields, Ident, ItemEnum, Meta, Path, Type};
 use syn::spanned::Spanned;
-use syn::parse::Parser;
 
 // https://stackoverflow.com/questions/55271857/how-can-i-get-the-t-from-an-optiont-when-using-syn
 fn extract_type_from_option(ty: &syn::Type) -> Option<&syn::Type> {
@@ -116,4 +114,143 @@ pub fn derive_node_kind(input: TokenStream) -> TokenStream {
             return e.write_errors().into();
         }
     }.to_token_stream().into()
+}
+
+#[derive(FromMeta)]
+struct CreateTokenNodesArgs {}
+
+#[proc_macro_attribute]
+pub fn create_token_nodes(args: TokenStream, input: TokenStream) -> TokenStream {
+    let attr_args = match NestedMeta::parse_meta_list(args.into()) {
+        Ok(v) => v,
+        Err(e) => { return TokenStream::from(darling::Error::from(e).write_errors()); }
+    };
+    let args = match CreateTokenNodesArgs::from_list(&attr_args) {
+        Ok(v) => v,
+        Err(e) => { return TokenStream::from(e.write_errors()); }
+    };
+    let input = parse_macro_input!(input as ItemEnum);
+    let token_vis = &input.vis;
+    let token_name = &input.ident;
+    let mut display_names = TokenStream2::new();
+
+    let mut result = quote! {
+        #[derive(Debug)]
+        #input
+    };
+    for variant in input.variants {
+        if matches!(variant.fields, Fields::Named(_)) {
+            result.extend(
+                syn::Error::new(
+                    variant.fields.span(),
+                    "token variants must have unit or tuple type"
+                ).to_compile_error()
+            );
+            continue;
+        }
+
+        let variant_name = &variant.ident;
+        let node_name = format_ident!("{}Token", variant.ident);
+        
+        let mut destructure_names = quote! {};
+        let mut fabricate = quote! {};
+        let mut ty = quote! {};
+        for (ix, field) in variant.fields.iter().enumerate() {
+            let vty = &field.ty;
+            let des = format_ident!("v_{ix}");
+            ty.extend(quote! { #vty, });
+            destructure_names.extend(quote! { #des, });
+            fabricate.extend(quote! { prolangine::parse::node::NodeKind::fabricate(span.clone()), });
+        }
+        // Make the value type a tuple (or unit)
+        ty = quote! { (#ty) };
+
+        // On unit variants, we don't need to destructure in any way
+        let destructure = if matches!(variant.fields, Fields::Unnamed(_)) {
+            quote! { (#destructure_names) }
+        }
+        else {
+            quote! {}
+        };
+
+        let mut display_name = variant_name.to_string().to_lowercase();
+
+        for attr in variant.attrs {
+            if attr.meta.path().get_ident().map(|i| i.to_string()) == Some(String::from("token")) {
+                match attr.meta {
+                    Meta::List(list) => {}
+                    _ => {
+                        result.extend(
+                            syn::Error::new(
+                                variant.fields.span(),
+                                "expected arguments for token(...)"
+                            ).to_compile_error()
+                        );
+                    }
+                }
+            }
+        }
+
+        display_names.extend(quote! {
+            #token_name::#variant_name #destructure => #display_name,
+        });
+
+        result.extend(quote! {
+            #[derive(Debug)]
+            #token_vis struct #node_name {
+                value: #ty,
+                span: prolangine::src::Span,
+            }
+
+            impl prolangine::parse::node::Parse<#token_name> for #node_name {
+                fn parse<I>(tokenizer: &mut I) -> prolangine::parse::node::Node<Self>
+                    where
+                        Self: Sized,
+                        I: prolangine::parse::token::TokenIterator<#token_name>
+                {
+                    let token = tokenizer.next();
+                    let span = token.span();
+                    if let Some(#token_name::#variant_name #destructure) = token.as_token() {
+                        let span = token.span();
+                        let Some(#token_name::#variant_name #destructure) = token.into_token() else {
+                            unreachable!();
+                        };
+                        prolangine::parse::node::Node::from(#node_name {
+                            value: (#destructure_names),
+                            span,
+                        })
+                    }
+                    else {
+                        prolangine::parse::node::Node::expected(#display_name, &token, span.clone())
+                    }
+                }
+                fn peek<I>(tokenizer: &I) -> bool
+                    where
+                        Self: Sized,
+                        I: prolangine::parse::token::TokenIterator<#token_name>
+                {
+                    matches!(tokenizer.peek().as_token(), Some(#token_name::#variant_name #destructure))
+                }
+            }
+
+            impl prolangine::parse::node::NodeKind for #node_name {
+                fn children(&self) -> Vec<&dyn NodeKind> {
+                    vec![]
+                }
+                fn span(&self) -> Span {
+                    self.span.clone()
+                }
+            }
+        });
+    }
+    result.extend(quote! {
+        impl prolangine::parse::token::DisplayName for #token_name {
+            fn display_name(&self) -> String {
+                String::from(match self {
+                    #display_names
+                })
+            }
+        }
+    });
+    result.into()
 }

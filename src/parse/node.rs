@@ -1,47 +1,81 @@
 
-use std::fmt::Debug;
-use crate::{log::Logger, src::Span};
-
+use std::fmt::{Debug, Display};
+use crate::src::Span;
 use super::token::{Token, TokenIterator, TokenKind};
 
 pub trait NodeKind: Debug { 
-    type TokenKind: TokenKind;
-
-    fn parse<I>(tokenizer: &mut I, logger: &mut Logger) -> Self
-        where
-            Self: Sized,
-            I: TokenIterator<Self::TokenKind>;
-
-    /// Check if this type is posisbly coming up on the token stream at a position
-    fn peek<I>(tokenizer: &I) -> bool
-        where
-            Self: Sized,
-            I: TokenIterator<Self::TokenKind>;
-
     /// Get the children of this AST node
-    fn children(&self) -> Vec<&dyn NodeKind<TokenKind = Self::TokenKind>>;
+    fn children(&self) -> Vec<&dyn NodeKind>;
 
     /// Get the span (raw source code string) of this node
     fn span(&self) -> Span;
 }
 
-impl<T: TokenKind> NodeKind for Token<T> {
-    type TokenKind = T;
-    fn parse<I>(tokenizer: &mut I, logger: &mut Logger) -> Self
+pub trait Parse<T: TokenKind>: NodeKind {
+    fn parse<I>(tokenizer: &mut I) -> Node<Self>
         where
             Self: Sized,
-            I: TokenIterator<Self::TokenKind>
+            I: TokenIterator<T>;
+
+    /// Check if this type is posisbly coming up on the token stream at a position
+    fn peek<I>(tokenizer: &I) -> bool
+        where
+            Self: Sized,
+            I: TokenIterator<T>;
+}
+
+#[derive(Debug)]
+pub enum Node<N: NodeKind> {
+    Some(Box<N>),
+    Error(String, Span),
+}
+
+impl<N: NodeKind> Node<N> {
+    pub fn expected<W: Display, G: Display>(what: W, got: G, span: Span) -> Self {
+        Self::Error(format!("expected {what}, got {got}"), span)
+    }
+}
+
+impl<N: NodeKind> From<N> for Node<N> {
+    fn from(node: N) -> Self {
+        Self::Some(Box::from(node))
+    }
+}
+
+impl<N: NodeKind> NodeKind for Node<N> {
+    fn children(&self) -> Vec<&dyn NodeKind> {
+        match self {
+            Self::Some(o) => o.children(),
+            Self::Error(_, _) => vec![],
+        }
+    }
+    fn span(&self) -> Span {
+        match self {
+            Self::Some(o) => o.span(),
+            Self::Error(_, span) => span.clone(),
+        }
+    }
+}
+
+impl<T: TokenKind> Parse<T> for Token<T> {
+    fn parse<I>(tokenizer: &mut I) -> Node<Self>
+        where
+            Self: Sized,
+            I: TokenIterator<T>
     {
-        tokenizer.next(logger)
+        Node::Some(Box::from(tokenizer.next()))
     }
     fn peek<I>(_tokenizer: &I) -> bool
         where
             Self: Sized,
-            I: TokenIterator<Self::TokenKind>
+            I: TokenIterator<T>
     {
+        // The stream will always contain more tokens because EOF is a token
         true
     }
-    fn children(&self) -> Vec<&dyn NodeKind<TokenKind = Self::TokenKind>> {
+}
+impl<T: TokenKind> NodeKind for Token<T> {
+    fn children(&self) -> Vec<&dyn NodeKind> {
         vec![]
     }
     fn span(&self) -> Span {
@@ -49,63 +83,45 @@ impl<T: TokenKind> NodeKind for Token<T> {
     }
 }
 
-impl<T: NodeKind> NodeKind for Box<T> {
-    type TokenKind = T::TokenKind;
-    fn parse<I>(tokenizer: &mut I, logger: &mut Logger) -> Self
-        where
-            Self: Sized,
-            I: TokenIterator<Self::TokenKind>
-    {
-        Box::from(T::parse(tokenizer, logger))
-    }
-    fn peek<I>(tokenizer: &I) -> bool
-        where
-            Self: Sized,
-            I: TokenIterator<Self::TokenKind>
-    {
-        T::peek(tokenizer)
-    }
-    fn children(&self) -> Vec<&dyn NodeKind<TokenKind = Self::TokenKind>> {
-        self.as_ref().children()
-    }
-    fn span(&self) -> Span {
-        self.as_ref().span()
-    }
-}
-
 #[derive(Debug)]
-pub struct Maybe<N: NodeKind> {
-    node: Option<N>,
-    span: Span,
+pub enum Maybe<N: NodeKind> {
+    Some(Node<N>),
+    None(Span),
 }
 
-impl<N: NodeKind> NodeKind for Maybe<N> {
-    type TokenKind = N::TokenKind;
-    fn parse<I>(tokenizer: &mut I, logger: &mut Logger) -> Self
+impl<T: TokenKind, N: NodeKind + Parse<T>> Parse<T> for Maybe<N> {
+    fn parse<I>(tokenizer: &mut I) -> Node<Self>
         where
             Self: Sized,
-            I: TokenIterator<Self::TokenKind>
+            I: TokenIterator<T>
     {
         let start = tokenizer.start();
-        Self {
-            node: N::peek(tokenizer).then(|| N::parse(tokenizer, logger)),
-            span: tokenizer.span_from(start),
+        if N::peek(tokenizer) {
+            Node::from(Self::Some(N::parse(tokenizer)))
+        }
+        else {
+            Node::from(Self::None(tokenizer.span_from(start)))
         }
     }
     fn peek<I>(tokenizer: &I) -> bool
         where
             Self: Sized,
-            I: TokenIterator<Self::TokenKind>
+            I: TokenIterator<T>
     {
         N::peek(tokenizer)
     }
-
-    fn children(&self) -> Vec<&dyn NodeKind<TokenKind = Self::TokenKind>> {
-        self.node.as_ref()
-            .map(|n| vec![n as &dyn NodeKind<TokenKind = Self::TokenKind>])
-            .unwrap_or_default()
+}
+impl<N: NodeKind> NodeKind for Maybe<N> {
+    fn children(&self) -> Vec<&dyn NodeKind> {
+        match self {
+            Self::Some(n) => n.children(),
+            Self::None(_) => vec![],
+        }
     }
     fn span(&self) -> Span {
-        self.span.clone()
+        match self {
+            Self::Some(n) => n.span(),
+            Self::None(span) => span.clone(),
+        }
     }
 }
