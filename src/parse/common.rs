@@ -7,33 +7,6 @@ use unicode_xid::UnicodeXID;
 
 use super::{node::{Node, NodeKind, Parse}, token::{Token, TokenIterator, TokenKind, TokenTree}};
 
-pub trait CommonDelimiters: TokenKind {
-    fn is_parenthesized(&self) -> bool {
-        false
-    }
-    fn parenthesized(self) -> Option<TokenTree<Self>> {
-        None
-    }
-    fn is_bracketed(&self) -> bool {
-        false
-    }
-    fn bracketed(self) -> Option<TokenTree<Self>> {
-        None
-    }
-    fn is_braced(&self) -> bool {
-        false
-    }
-    fn braced(self) -> Option<TokenTree<Self>> {
-        None
-    }
-    fn is_angle_bracketed(&self) -> bool {
-        false
-    }
-    fn angle_bracketed(self) -> Option<TokenTree<Self>> {
-        None
-    }
-}
-
 /// Skip C-like comments (`// ...` line comments and `/* ... */` block comments)
 /// in a source stream, as well as skipping whitespace
 pub fn skip_c_like_comments(cursor: &mut SrcCursor) {
@@ -345,55 +318,3 @@ impl<N: NodeKind, S: NodeKind> NodeKind for SeparatedOptTrailing<N, S> {
         self.span.clone()
     }
 }
-
-macro_rules! def_delimited_node {
-    ($name: ident, $is_func: ident, $as_func: ident, $str: literal) => {
-        #[derive(Debug)]
-        pub struct $name<N: NodeKind> {
-            item: Node<N>,
-            span: Span,
-        }
-
-        impl<T: CommonDelimiters, N: NodeKind + Parse<T>> Parse<T> for $name<N> {
-            fn parse<I>(tokenizer: &mut I) -> Node<Self>
-                where
-                    Self: Sized,
-                    I: TokenIterator<T>
-            {
-                let start = tokenizer.start();
-                let token = tokenizer.next();
-                if token.as_token().is_some_and(|t| t.$is_func()) {
-                    Node::from(Self {
-                        item: token.into_token().unwrap()
-                            .$as_func().unwrap()
-                            .parse_fully_into::<N>(),
-                        span: tokenizer.span_from(start),
-                    })
-                }
-                else {
-                    Node::expected($str, &token, tokenizer.span_from(start))
-                }
-            }
-            fn peek<I>(tokenizer: &I) -> bool
-                where
-                    Self: Sized,
-                    I: TokenIterator<T>
-            {
-                tokenizer.peek().as_token().is_some_and(|t| t.$is_func())
-            }
-        }
-        impl<N: NodeKind> NodeKind for $name<N> {
-            fn children(&self) -> Vec<&dyn NodeKind> {
-                vec![&self.item]
-            }
-            fn span(&self) -> Span {
-                self.span.clone()
-            }
-        }
-    };
-}
-
-def_delimited_node!(Parenthesized, is_parenthesized, parenthesized, "parentheses");
-def_delimited_node!(Bracketed, is_bracketed, bracketed, "brackets");
-def_delimited_node!(Braced, is_braced, braced, "braces");
-def_delimited_node!(AngleBracketed, is_angle_bracketed, angle_bracketed, "angle brackets");

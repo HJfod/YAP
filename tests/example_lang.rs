@@ -1,5 +1,5 @@
 use std::path::Path;
-use prolangine_macros::create_token_nodes;
+use prolangine_macros::{create_token_nodes, NodeKind};
 use prolangine::{
     parse::{
         common::{
@@ -8,11 +8,10 @@ use prolangine::{
             parse_c_like_word,
             parse_delimited,
             parse_matching,
-            CommonDelimiters,
-            Parenthesized, ParsedString
+            ParsedString
         },
         node::{Node, NodeKind, Parse},
-        token::{ParsedTokenKind, Token, TokenKind, TokenTree}
+        token::{DisplayName, ParsedTokenKind, Token, TokenKind, TokenTree}
     },
     src::{Codebase, Span, SrcCursor}
 };
@@ -24,25 +23,25 @@ fn is_op_char(ch: char) -> bool {
 #[create_token_nodes]
 pub enum ExampleLanguageToken {
     Number(f64),
-    Ident(String),
     String(String),
+
+    #[token(display_name = "identifier")]
+    Ident(String),
+
+    #[token(display_name = "'+'")]
     Plus,
+    #[token(display_name = "'-'")]
     Minus,
+    #[token(display_name = "'='")]
     Assign,
+    #[token(display_name = "'=='")]
     Eq,
+
+    #[token(node = "Parenthesized<T>")]
     Parenthesis(TokenTree<ExampleLanguageToken>),
 }
 
 impl TokenKind for ExampleLanguageToken {
-    // fn display_name(&self) -> String {
-    //     match self {
-    //         Self::Number(_) => String::from("number"),
-    //         Self::Ident(_)  => String::from("identifier"),
-    //         Self::String(_) => String::from("string"),
-    //         Self::Op(_)     => String::from("operator"),
-    //         Self::Parenthesis(_) => String::from("parenthesized expression"),
-    //     }
-    // }
     fn next(cursor: &mut SrcCursor) -> Token<ExampleLanguageToken> {
         let start = cursor.pos();
 
@@ -105,69 +104,15 @@ impl TokenKind for ExampleLanguageToken {
     }
 }
 
-impl CommonDelimiters for ExampleLanguageToken {
-    fn is_parenthesized(&self) -> bool {
-        matches!(self, Self::Parenthesis(_))
-    }
-    fn parenthesized(self) -> Option<TokenTree<Self>> {
-        match self {
-            Self::Parenthesis(p) => Some(p),
-            _ => None,
-        }
-    }
-}
-
-#[derive(Debug)]
+#[derive(Debug, NodeKind)]
+#[parse(expected = "expression", token_type = "ExampleLanguageToken")]
 pub enum AtomExpr {
     Closed(Node<Parenthesized<Expr>>),
     String(Node<StringToken>),
     Number(Node<NumberToken>),
-}
-
-impl Parse<ExampleLanguageToken> for AtomExpr {
-    fn parse<I>(tokenizer: &mut I) -> Node<Self>
-        where
-            Self: Sized,
-            I: prolangine::parse::token::TokenIterator<ExampleLanguageToken>
-    {
-        if Parenthesized::<Expr>::peek(tokenizer) {
-            Node::from(Self::Closed(Parenthesized::parse(tokenizer)))
-        }
-        else if StringToken::peek(tokenizer) {
-            Node::from(Self::String(StringToken::parse(tokenizer)))
-        }
-        else if NumberToken::peek(tokenizer) {
-            Node::from(Self::Number(NumberToken::parse(tokenizer)))
-        }
-        else {
-            let token = tokenizer.next();
-            Node::expected("expression", &token, token.span())
-        }
-    }
-    fn peek<I>(tokenizer: &I) -> bool
-        where
-            Self: Sized,
-            I: prolangine::parse::token::TokenIterator<ExampleLanguageToken>
-    {
-        Parenthesized::<Expr>::peek(tokenizer) || 
-            StringToken::peek(tokenizer) || 
-            NumberToken::peek(tokenizer)
-    }
-}
-impl NodeKind for AtomExpr {
-    fn children(&self) -> Vec<&dyn NodeKind> {
-        match self {
-            Self::Closed(e) => e.children(),
-            Self::String(e) => e.children(),
-            Self::Number(e) => e.children(),
-        }
-    }
-    fn span(&self) -> Span {
-        match self {
-            Self::Closed(e) => e.span(),
-            Self::String(e) => e.span(),
-            Self::Number(e) => e.span(),
-        }
+    Test {
+        first: Node<StringToken>,
+        span: Span,
     }
 }
 
@@ -267,6 +212,11 @@ fn parse_source_from_file() {
     if src.tokenize::<ExampleLanguageToken>().into_iter().any(|t| t.is_error()) {
         panic!("tokenization produced errors");
     }
+}
+
+#[test]
+fn test_token_display_names() {
+    assert_eq!(ExampleLanguageToken::Ident(String::new()).display_name().as_str(), "identifier");
 }
 
 #[test]
