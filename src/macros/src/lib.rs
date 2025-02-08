@@ -95,7 +95,7 @@ fn generate_field_parse_code(span: Span, ident: TokenStream2, fields: ast::Field
     match fields.style {
         // Unit structs are disallowed because there's nothing to parse there
         ast::Style::Unit => {
-            ToImplForDerive::new_error(ident.span(), "NodeKind variants must have be tuple or struct types")
+            ToImplForDerive::new_error(span, "NodeKind variants must have be tuple or struct types")
         }
 
         // Tuple structs must be Thing(Node<X>) with one field only 
@@ -105,7 +105,7 @@ fn generate_field_parse_code(span: Span, ident: TokenStream2, fields: ast::Field
         ast::Style::Tuple => {
             if fields.len() != 1 {
                 return ToImplForDerive::new_error(
-                    ident.span(),
+                    span,
                     "NodeKind variants must either be tuples with exactly one \
                     Node<Smth> field or structs with a `span: Span` field"
                 );
@@ -133,10 +133,7 @@ fn generate_field_parse_code(span: Span, ident: TokenStream2, fields: ast::Field
         // Struct variants must have a `span: Span field`
         ast::Style::Struct => {
             if !fields.iter().any(|f| f.ident.as_ref().is_some_and(|i| i == "span")) {
-                return ToImplForDerive::new_error(
-                    ident.span(),
-                    "NodeKind struct variants must have a `span: Span` field"
-                );
+                return ToImplForDerive::new_error(span, "NodeKind struct variants must have a `span: Span` field");
             }
 
             // Get the first type for peeking
