@@ -1,11 +1,28 @@
 
-use std::fmt::{Debug, Display};
+use std::{fmt::{Debug, Display}, rc::Rc};
 use crate::src::Span;
 use super::token::{Token, TokenIterator, TokenKind};
 
+// todo: maybe errors should be stored in the nodes instead?
+// pros:
+// + not every node can have errors (for example any errors in Expr are either 
+//   "expected expression" or a failure to parse one of its enum variants)
+// + some nodes can have errors but still be meaningfully usable (for example 
+//   string literals with invalid escape sequences)
+// + some nodes may have multiple errors at once but the current design only 
+//   supports having one
+// + no need to deal with the awkwardness of Nodes being possibly invalid
+// cons:
+// - actually it's good to deal with the awkwardness of Nodes being possibly 
+//   invalid because if the Node has run into an unparseable error then we 
+//   know we shouldn't even attempt to process it further and fabricating 
+//   false Nodes could cause more errors down the line (like the stupid 
+//   'implicit int' errors in C/C++)
+// - now basically every token has to carry Option<(String, Span)> alongside it
+
 pub trait NodeKind: Debug { 
     /// Get the children of this AST node
-    fn children(&self) -> Vec<&dyn NodeKind>;
+    fn children<'a>(&'a self) -> Vec<Node<dyn NodeKind + 'a>>;
 
     /// Get the span (raw source code string) of this node
     fn span(&self) -> Span;
@@ -25,25 +42,55 @@ pub trait Parse<T: TokenKind>: NodeKind {
 }
 
 #[derive(Debug)]
-pub enum Node<N: NodeKind> {
-    Some(Box<N>),
+pub enum Node<N: NodeKind + ?Sized> {
+    Some(Rc<N>),
     Error(String, Span),
 }
 
-impl<N: NodeKind> Node<N> {
+impl<N: NodeKind + ?Sized> Node<N> {
     pub fn expected<W: Display, G: Display>(what: W, got: G, span: Span) -> Self {
         Self::Error(format!("expected {what}, got {got}"), span)
     }
+    pub fn contains_errors(&self) -> bool {
+        match self {
+            Node::Some(n) => n.children().into_iter().any(|n| n.contains_errors()),
+            Node::Error(_, _) => true,
+        }
+    }
+    pub fn get_errors(&self) -> Vec<(String, Span)> {
+        let mut res = Vec::new();
+        match self {
+            Node::Some(n) => n.children().into_iter().for_each(|c| res.extend(c.get_errors())),
+            Node::Error(e, s) => res.push((e.clone(), s.clone())),
+        }
+        res
+    }
 }
-
-impl<N: NodeKind> From<N> for Node<N> {
-    fn from(node: N) -> Self {
-        Self::Some(Box::from(node))
+impl<N: NodeKind> Node<N> {
+    pub fn clone_dyn<'a>(&'a self) -> Node<dyn NodeKind + 'a> {
+        match self.clone() {
+            Self::Some(n) => Node::Some(n as Rc<dyn NodeKind + 'a>),
+            Self::Error(e, s) => Node::Error(e, s),
+        }
     }
 }
 
-impl<N: NodeKind> NodeKind for Node<N> {
-    fn children(&self) -> Vec<&dyn NodeKind> {
+impl<N: NodeKind + ?Sized> Clone for Node<N> {
+    fn clone(&self) -> Self {
+        match self {
+            Node::Some(n) => Self::Some(Rc::clone(n)),
+            Node::Error(e, s) => Self::Error(e.clone(), s.clone()),
+        }
+    }
+}
+impl<N: NodeKind> From<N> for Node<N> {
+    fn from(node: N) -> Self {
+        Self::Some(Rc::from(node))
+    }
+}
+
+impl<N: NodeKind + ?Sized> NodeKind for Node<N> {
+    fn children<'a>(&'a self) -> Vec<Node<dyn NodeKind + 'a>> {
         match self {
             Self::Some(o) => o.children(),
             Self::Error(_, _) => vec![],
@@ -63,7 +110,7 @@ impl<T: TokenKind> Parse<T> for Token<T> {
             Self: Sized,
             I: TokenIterator<T>
     {
-        Node::Some(Box::from(tokenizer.next()))
+        Node::Some(Rc::from(tokenizer.next()))
     }
     fn peek<I>(_tokenizer: &I) -> bool
         where
@@ -75,7 +122,7 @@ impl<T: TokenKind> Parse<T> for Token<T> {
     }
 }
 impl<T: TokenKind> NodeKind for Token<T> {
-    fn children(&self) -> Vec<&dyn NodeKind> {
+    fn children(&self) -> Vec<Node<dyn NodeKind>> {
         vec![]
     }
     fn span(&self) -> Span {
@@ -112,7 +159,7 @@ impl<T: TokenKind, N: NodeKind + Parse<T>> Parse<T> for Maybe<N> {
     }
 }
 impl<N: NodeKind> NodeKind for Maybe<N> {
-    fn children(&self) -> Vec<&dyn NodeKind> {
+    fn children<'a>(&'a self) -> Vec<Node<dyn NodeKind + 'a>> {
         match self {
             Self::Some(n) => n.children(),
             Self::None(_) => vec![],

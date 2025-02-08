@@ -178,6 +178,10 @@ fn parse_source_from_file() {
     if src.tokenize::<ExampleLanguageToken>().into_iter().any(|t| t.is_error()) {
         panic!("tokenization produced errors");
     }
+    let node: Node<Expr> = src.parse();
+    if node.contains_errors() {
+        panic!("ran into errors: {:?}", node.get_errors());
+    }
 }
 
 #[test]

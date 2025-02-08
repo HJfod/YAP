@@ -245,10 +245,8 @@ impl<
     }
 }
 impl<N: NodeKind, S: NodeKind> NodeKind for Separated<N, S> {
-    fn children(&self) -> Vec<&dyn NodeKind> {
-        self.items.iter()
-            .map(|n| n as &dyn NodeKind)
-            .collect()
+    fn children<'a>(&'a self) -> Vec<Node<dyn NodeKind + 'a>> {
+        self.items.iter().map(|n| n.clone_dyn()).collect()
     }
     fn span(&self) -> Span {
         self.span.clone()
@@ -309,10 +307,8 @@ impl<
     }
 }
 impl<N: NodeKind, S: NodeKind> NodeKind for SeparatedOptTrailing<N, S> {
-    fn children(&self) -> Vec<&dyn NodeKind> {
-        self.items.iter()
-            .map(|n| n as &dyn NodeKind)
-            .collect()
+    fn children<'a>(&'a self) -> Vec<Node<dyn NodeKind + 'a>> {
+        self.items.iter().map(|n| n.clone_dyn()).collect()
     }
     fn span(&self) -> Span {
         self.span.clone()

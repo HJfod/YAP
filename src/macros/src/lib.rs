@@ -277,7 +277,7 @@ pub fn derive_node_kind(input: TokenStream) -> TokenStream {
         }
 
         impl prolangine::parse::node::NodeKind for #for_item {
-            fn children(&self) -> Vec<&dyn prolangine::parse::node::NodeKind> {
+            fn children<'a>(&'a self) -> Vec<prolangine::parse::node::Node<dyn prolangine::parse::node::NodeKind + 'a>> {
                 match self {
                     #children_match_impl
                 }
@@ -414,7 +414,7 @@ pub fn create_token_nodes(args: TokenStream, input: TokenStream) -> TokenStream 
         });
 
         let children_impl = use_generic_parameter.then(|| quote! {
-            vec![&self.value]
+            vec![self.value.clone_dyn()]
         }).unwrap_or_else(|| quote! {
             vec![]
         });
@@ -460,7 +460,7 @@ pub fn create_token_nodes(args: TokenStream, input: TokenStream) -> TokenStream 
             }
 
             impl #generics_def prolangine::parse::node::NodeKind for #node_name #generics_use {
-                fn children(&self) -> Vec<&dyn NodeKind> {
+                fn children<'a>(&'a self) -> Vec<prolangine::parse::node::Node<dyn NodeKind + 'a>> {
                     #children_impl
                 }
                 fn span(&self) -> Span {
