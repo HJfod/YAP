@@ -74,105 +74,132 @@ struct ToImplForDerive {
     peek_impl: TokenStream2,
 }
 
-fn generate_field_parse_code(ident: TokenStream2, fields: ast::Fields<ParseField>) -> ToImplForDerive {
-    let mut res = ToImplForDerive::default();
+impl ToImplForDerive {
+    pub fn new_error<T: std::fmt::Display>(span: Span, message: T) -> Self {
+        Self {
+            children_match_impl: syn::Error::new(span, message).to_compile_error(),
+            ..Default::default()
+        }
+    }
+}
+
+fn get_first_node_field_for_peeking(fields: &ast::Fields<ParseField>) -> Result<&Type, String> {
+    // todo: handle optional fields
+    match extract_node_type(&fields.iter().next().unwrap().ty) {
+        Some(ty) => Ok(ty),
+        None => Err("NodeKind variants must have at least one field of type `Node<Smth>`".into()),
+    }
+}
+
+fn generate_field_parse_code(span: Span, ident: TokenStream2, fields: ast::Fields<ParseField>) -> ToImplForDerive {
     match fields.style {
         // Unit structs are disallowed because there's nothing to parse there
         ast::Style::Unit => {
-            res.children_match_impl.extend(
-                syn::Error::new(
-                    ident.span(),
-                    "NodeKind variants must have be tuple or struct types"
-                ).to_compile_error()
-            );
+            ToImplForDerive::new_error(ident.span(), "NodeKind variants must have be tuple or struct types")
         }
 
         // Tuple structs must be Thing(Node<X>) with one field only 
         // because if there's multiple nodes it's ambiguous whose 
-        // Span to use to you need to add a Span and at that point 
+        // Span to use so you need to add a Span and at that point 
         // just make it a struct for simplicity dawg
         ast::Style::Tuple => {
             if fields.len() != 1 {
-                res.children_match_impl.extend(
-                    syn::Error::new(
-                        ident.span(),
-                        "NodeKind variants must either be tuples with exactly one \
-                        Node<Smth> field or structs with a `span: Span` field"
-                    ).to_compile_error()
+                return ToImplForDerive::new_error(
+                    ident.span(),
+                    "NodeKind variants must either be tuples with exactly one \
+                    Node<Smth> field or structs with a `span: Span` field"
                 );
-                return res;
             }
-            let Some(ty) = extract_node_type(&fields.iter().next().unwrap().ty) else {
-                res.children_match_impl.extend(
-                    syn::Error::new(
-                        ident.span(),
-                        "NodeKind variants must either be tuples with exactly one \
-                        Node<Smth> field or structs with a `span: Span` field"
-                    ).to_compile_error()
-                );
-                return res;
+            let first_ty = match get_first_node_field_for_peeking(&fields) {
+                Ok(v) => v,
+                Err(e) => return ToImplForDerive::new_error(span, e),
             };
-            res.children_match_impl.extend(quote! {
-                #ident (a) => a.children(),
-            });
-            res.span_match_impl.extend(quote! {
-                #ident (a) => a.span(),
-            });
-            if !res.parse_impl.is_empty() {
-                res.parse_impl.extend(quote! { else });
+            return ToImplForDerive {
+                children_match_impl: quote! {
+                    #ident (a) => a.children(),
+                },
+                span_match_impl: quote! {
+                    #ident (a) => a.span(),
+                },
+                parse_impl: quote! {
+                    Node::from(#ident(<#first_ty>::parse(tokenizer)))
+                },
+                peek_impl: quote! {
+                    <#first_ty>::peek(tokenizer)
+                },
             }
-            res.parse_impl.extend(quote! {
-                if <#ty>::peek(tokenizer) {
-                    Node::from(#ident(<#ty>::parse(tokenizer)))
-                }
-            });
-            if !res.peek_impl.is_empty() {
-                res.peek_impl.extend(quote! { || });
-            }
-            res.peek_impl.extend(quote! {
-                <#ty>::peek(tokenizer)
-            });
         }
 
         // Struct variants must have a `span: Span field`
         ast::Style::Struct => {
             if !fields.iter().any(|f| f.ident.as_ref().is_some_and(|i| i == "span")) {
-                res.children_match_impl.extend(
-                    syn::Error::new(
-                        ident.span(),
-                        "NodeKind struct variants must have a `span: Span` field"
-                    ).to_compile_error()
+                return ToImplForDerive::new_error(
+                    ident.span(),
+                    "NodeKind struct variants must have a `span: Span` field"
                 );
-                return res;
             }
+
+            // Get the first type for peeking
+            let first_ty = match get_first_node_field_for_peeking(&fields) {
+                Ok(v) => v,
+                Err(e) => return ToImplForDerive::new_error(span, e),
+            };
     
             let mut destructure = quote! {};
-            let mut result_build = quote! { let mut res = vec![]; };
-            fields.into_iter().for_each(|v| {
-                let ident = v.ident.unwrap();
+            let mut children_result = quote! { let mut res = vec![]; };
+            let mut parse_fields = quote! {};
+            for v in fields.iter() {
+                let ident = v.ident.as_ref().unwrap();
+
+                // Destructuring just needs the name
                 destructure.extend(quote! { #ident, });
-                if extract_node_type(&v.ty).is_some() {
-                    result_build.extend(quote! {
+
+                // If this type is a Node, deal with it like that
+                if let Some(ty) = extract_node_type(&v.ty) {
+                    children_result.extend(quote! {
                         res.extend(#ident.children());
                     });
+                    parse_fields.extend(quote! {
+                        #ident: Node::from(<#ty>::parse(tokenizer)),
+                    });
                 }
-            });
-            result_build.extend(quote! { res });
+                // Span fields are parsed specially
+                else if ident == "span" {
+                    parse_fields.extend(quote! {
+                        #ident: tokenizer.span_from(start),
+                    });
+                }
+                // Otherwise use Default to construct whatever this field is
+                else {
+                    parse_fields.extend(quote! {
+                        #ident: Default::default(),
+                    });
+                }
+            }
+            children_result.extend(quote! { res });
     
-            res.children_match_impl.extend(quote! {
-                #[allow(unused_variables)]
-                #ident { #destructure } => {
-                    #result_build
+            ToImplForDerive {
+                children_match_impl: quote! {
+                    #[allow(unused_variables)]
+                    #ident { #destructure } => {
+                        #children_result
+                    },
                 },
-            });
-            // We have already checked that there must exist a field named `span`
-            res.span_match_impl.extend(quote! {
-                #[allow(unused_variables)]
-                #ident { #destructure } => span.clone(),
-            });
+                // We have already checked that there must exist a field named `span`
+                span_match_impl: quote! {
+                    #[allow(unused_variables)]
+                    #ident { #destructure } => span.clone(),
+                },
+                parse_impl: quote! {
+                    let start = tokenizer.start();
+                    Node::from(#ident { #parse_fields })
+                },
+                peek_impl: quote! {
+                    <#first_ty>::peek(tokenizer)
+                },
+            }
         }
     }
-    res
 }
 
 #[proc_macro_derive(NodeKind, attributes(parse))]
@@ -197,21 +224,32 @@ pub fn derive_node_kind(input: TokenStream) -> TokenStream {
             };
             for variant in variants {
                 let ident = variant.ident;
-                let vgen = generate_field_parse_code(quote! { Self::#ident }, variant.fields);
+                let vgen = generate_field_parse_code(ident.span(), quote! { Self::#ident }, variant.fields);
                 gen.children_match_impl.extend(vgen.children_match_impl);
                 gen.span_match_impl.extend(vgen.span_match_impl);
-                gen.parse_impl.extend(vgen.parse_impl);
-                gen.peek_impl.extend(vgen.peek_impl);
+
+                let peek_impl = vgen.peek_impl;
+                let parse_impl = vgen.parse_impl;
+                gen.parse_impl.extend(quote! {
+                    if #peek_impl {
+                        #parse_impl
+                    }
+                    else
+                });
+                gen.peek_impl.extend(quote! { #peek_impl || });
             }
+            // Normal case is error on next token
             gen.parse_impl.extend(quote! {
-                else {
+                {
                     let token = tokenizer.next();
                     Node::expected(#expected, &token, token.span())
                 }
             });
+            // Last case has a dangling ||
+            gen.peek_impl.extend(quote! { false });
         }
         ast::Data::Struct(fields) => {
-            let vgen = generate_field_parse_code(quote! { Self }, fields);
+            let vgen = generate_field_parse_code(for_item.span(), quote! { Self }, fields);
             gen.children_match_impl.extend(vgen.children_match_impl);
             gen.span_match_impl.extend(vgen.span_match_impl);
             gen.parse_impl.extend(vgen.parse_impl);

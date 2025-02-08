@@ -10,7 +10,7 @@ use prolangine::{
             parse_matching,
             ParsedString
         },
-        node::{Node, NodeKind, Parse},
+        node::{Node, NodeKind},
         token::{DisplayName, ParsedTokenKind, Token, TokenKind, TokenTree}
     },
     src::{Codebase, Span, SrcCursor}
@@ -116,44 +116,10 @@ pub enum AtomExpr {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, NodeKind)]
+#[parse(expected = "expression", token_type = "ExampleLanguageToken")]
 pub enum Expr {
     Atom(Node<AtomExpr>),
-}
-
-impl Parse<ExampleLanguageToken> for Expr {
-    fn parse<I>(tokenizer: &mut I) -> Node<Self>
-        where
-            Self: Sized,
-            I: prolangine::parse::token::TokenIterator<ExampleLanguageToken>
-    {
-        if AtomExpr::peek(tokenizer) {
-            Node::from(Self::Atom(AtomExpr::parse(tokenizer)))
-        }
-        else {
-            let token = tokenizer.next();
-            Node::expected("expression", &token, token.span())
-        }
-    }
-    fn peek<I>(tokenizer: &I) -> bool
-        where
-            Self: Sized,
-            I: prolangine::parse::token::TokenIterator<ExampleLanguageToken>
-    {
-        AtomExpr::peek(tokenizer)
-    }
-}
-impl NodeKind for Expr {
-    fn children(&self) -> Vec<&dyn NodeKind> {
-        match self {
-            Self::Atom(e) => e.children(),
-        }
-    }
-    fn span(&self) -> Span {
-        match self {
-            Self::Atom(e) => e.span(),
-        }
-    }
 }
 
 trait DebugEq {

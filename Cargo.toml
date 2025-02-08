@@ -5,7 +5,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-colored = "2.1"
+colored = "3.0.0"
 line-col = "0.2"
 strum = { version = "0.26", features = ["derive"] }
 unicode-xid = "0.2"
