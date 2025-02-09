@@ -408,7 +408,7 @@ pub fn create_token_nodes(args: TokenStream, input: TokenStream) -> TokenStream 
         let generics_use = use_generic_parameter.then(|| quote! { <N> }).unwrap_or_default();
 
         let parse_inner_impl = use_generic_parameter.then(|| quote! {
-            #destructure_names.parse_fully_into()
+            prolangine::parse::node::Parser::parse_fully(#destructure_names)
         }).unwrap_or_else(|| quote! {
             #destructure_names
         });

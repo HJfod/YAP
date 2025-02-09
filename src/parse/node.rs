@@ -41,6 +41,39 @@ pub trait Parse<T: TokenKind>: NodeKind {
             I: TokenIterator<T>;
 }
 
+pub trait Parser<T: TokenKind> {
+    fn tokenize_fully(self) -> Vec<Token<T>>;
+    fn parse<N: Parse<T>>(&mut self) -> Node<N>;
+    fn parse_fully<N: Parse<T>>(self) -> Node<N>;
+}
+
+impl<T: TokenKind, I: TokenIterator<T>> Parser<T> for I {
+    fn tokenize_fully(mut self) -> Vec<Token<T>> {
+        let mut res = Vec::new();
+        loop {
+            let token = self.next();
+            if token.is_eof() {
+                break;
+            }
+            res.push(token);
+        }
+        res
+    }
+    fn parse<N: Parse<T>>(&mut self) -> Node<N> {
+        N::parse(self)
+    }
+    fn parse_fully<N: Parse<T>>(mut self) -> Node<N> {
+        let res = N::parse(&mut self);
+        let next = self.next();
+        if !next.is_eof() {
+            let span = next.span();
+            // todo: this is probably bad that it returns an error node instead of the parse tree
+            return Node::expected(self.eof_name(), next, span);
+        }
+        res
+    }
+}
+
 #[derive(Debug)]
 pub enum Node<N: NodeKind + ?Sized> {
     Some(Rc<N>),

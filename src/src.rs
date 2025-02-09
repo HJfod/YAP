@@ -9,7 +9,7 @@ use std::{
     ops::Range,
     path::{Path, PathBuf},
 };
-use crate::parse::{node::{Node, Parse}, token::{Token, TokenIterator, TokenKind, Tokenizer}};
+use crate::parse::{node::{Node, Parse, Parser}, token::{Token, TokenKind, Tokenizer}};
 
 pub enum Underline {
     /// Error squiggle
@@ -186,24 +186,14 @@ impl Src {
         Span(self.id(), range)
     }
 
-    /// Tokenize this source file according to the Language's token type
+    /// Tokenize this source file according to the Language's token type. 
+    /// Does not include the EOF token
     pub fn tokenize<T: TokenKind>(&self) -> Vec<Token<T>> {
-        let mut tokenizer = Tokenizer::new(self);
-        let mut res = Vec::new();
-        loop {
-            let token = tokenizer.next();
-            if token.is_eof() {
-                break;
-            }
-            res.push(token);
-        }
-        res
+        Tokenizer::new(self).tokenize_fully()
     }
-
     /// Parse this source file into a type
     pub fn parse<T: TokenKind, N: Parse<T>>(&self) -> Node<N> {
-        let mut tokenizer = Tokenizer::new(self);
-        N::parse(&mut tokenizer)
+        Tokenizer::new(self).parse_fully()
     }
 }
 

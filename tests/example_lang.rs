@@ -110,10 +110,7 @@ pub enum AtomExpr {
     Closed(Node<Parenthesized<Expr>>),
     String(Node<StringToken>),
     Number(Node<NumberToken>),
-    Test {
-        first: Node<StringToken>,
-        span: Span,
-    }
+    Ident(Node<IdentToken>),
 }
 
 #[derive(Debug, NodeKind)]

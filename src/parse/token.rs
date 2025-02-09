@@ -3,7 +3,6 @@ use std::fmt::Debug;
 use std::fmt::Display;
 
 use super::common::skip_c_like_comments;
-use super::node::{Node, NodeKind, Parse};
 
 pub trait DisplayName {
     /// Get the display name
@@ -158,6 +157,8 @@ pub trait TokenIterator<T: TokenKind> {
     fn start(&self) -> usize;
     /// Get the span from `start` to the end of the last token returned
     fn span_from(&self, start: usize) -> Span;
+    /// Returns the name of the EOF token
+    fn eof_name(&self) -> String;
 
     fn src(&self) -> SrcID;
 }
@@ -182,7 +183,7 @@ impl<'s, T: TokenKind> Tokenizer<'s, T> {
         }
     }
 }
-impl<'s, T: TokenKind> TokenIterator<T> for Tokenizer<'s, T> {
+impl<T: TokenKind> TokenIterator<T> for Tokenizer<'_, T> {
     fn next(&mut self) -> Token<T> {
         self.last_end = self.next.span().end();
         std::mem::replace(&mut self.next, Self::fetch_next(&mut self.cursor))
@@ -198,6 +199,9 @@ impl<'s, T: TokenKind> TokenIterator<T> for Tokenizer<'s, T> {
     }
     fn src(&self) -> SrcID {
         self.cursor.src().id()
+    }
+    fn eof_name(&self) -> String {
+        String::from("end-of-file")
     }
 }
 
@@ -231,20 +235,6 @@ impl<T: TokenKind> TokenTree<T> {
     pub fn into_items(self) -> Vec<Token<T>> {
         self.tokens.collect()
     }
-    pub fn parse_fully_into<N: NodeKind + Parse<T>>(mut self) -> Node<N> {
-        let res = N::parse(&mut self);
-        if !self.next.is_eof() {
-            return Node::Error(
-                format!(
-                    "expected {}, got {}",
-                    self.eof.0.unwrap_or("end-of-file".to_string()),
-                    self.next
-                ), 
-                self.next.span(),
-            );
-        }
-        res
-    }
 }
 
 impl<T: TokenKind> TokenIterator<T> for TokenTree<T> {
@@ -263,6 +253,9 @@ impl<T: TokenKind> TokenIterator<T> for TokenTree<T> {
     }
     fn span_from(&self, start: usize) -> Span {
        self.next.span().src().span(start..self.last_end)
+    }
+    fn eof_name(&self) -> String {
+        self.eof.0.clone().unwrap_or(String::from("end-of-file"))
     }
     fn src(&self) -> SrcID {
         self.next.span().src()
