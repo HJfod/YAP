@@ -10,38 +10,38 @@ use darling::{ast, FromDeriveInput, FromField, FromMeta, FromVariant};
 use proc_macro::TokenStream;
 use proc_macro2::{Span, TokenStream as TokenStream2};
 use quote::{format_ident, quote};
-use syn::{parse_macro_input, Fields, GenericArgument, Ident, ItemEnum, PathArguments, Type};
+use syn::{parse_macro_input, Fields, Ident, ItemEnum, Type};
 use syn::spanned::Spanned;
 
-fn extract_node_type(ty: &Type) -> Option<&Type> {
-    match ty {
-        Type::Path(p) => {
-            if p.qself.is_some() {
-                return None;
-            }
-            let path_as_str = p.path.segments.iter()
-                .map(|p| p.ident.to_string())
-                .collect::<Vec<_>>()
-                .join("::");
+// fn extract_node_type(ty: &Type) -> Option<&Type> {
+//     match ty {
+//         Type::Path(p) => {
+//             if p.qself.is_some() {
+//                 return None;
+//             }
+//             let path_as_str = p.path.segments.iter()
+//                 .map(|p| p.ident.to_string())
+//                 .collect::<Vec<_>>()
+//                 .join("::");
 
-            if !"prolangine::parse::node::Node".ends_with(&path_as_str) {
-                return None;
-            }
-            match &p.path.segments.last().unwrap().arguments {
-                PathArguments::AngleBracketed(ab) => {
-                    match ab.args.first() {
-                        Some(GenericArgument::Type(ty)) => {
-                            Some(ty)
-                        }
-                        _ => None
-                    }
-                }
-                _ => None
-            }
-        }
-        _ => None,
-    }
-}
+//             if !"prolangine::parse::node::Node".ends_with(&path_as_str) {
+//                 return None;
+//             }
+//             match &p.path.segments.last().unwrap().arguments {
+//                 PathArguments::AngleBracketed(ab) => {
+//                     match ab.args.first() {
+//                         Some(GenericArgument::Type(ty)) => {
+//                             Some(ty)
+//                         }
+//                         _ => None
+//                     }
+//                 }
+//                 _ => None
+//             }
+//         }
+//         _ => None,
+//     }
+// }
 
 #[derive(FromDeriveInput)]
 #[darling(attributes(parse), supports(any))]
@@ -85,10 +85,13 @@ impl ToImplForDerive {
 
 fn get_first_node_field_for_peeking(fields: &ast::Fields<ParseField>) -> Result<&Type, String> {
     // todo: handle optional fields
-    match extract_node_type(&fields.iter().next().unwrap().ty) {
-        Some(ty) => Ok(ty),
-        None => Err("NodeKind variants must have at least one field of type `Node<Smth>`".into()),
-    }
+    return fields.iter().next()
+        .map(|f| &f.ty)
+        .ok_or("NodeKind variants must have at least one field`".into())
+    // match extract_node_type(&fields.iter().next().unwrap().ty) {
+        // Some(ty) => Ok(ty),
+        // None => Err("NodeKind variants must have at least one field of type `Node<Smth>`".into()),
+    // }
 }
 
 fn generate_field_parse_code(span: Span, ident: TokenStream2, fields: ast::Fields<ParseField>) -> ToImplForDerive {
@@ -98,7 +101,7 @@ fn generate_field_parse_code(span: Span, ident: TokenStream2, fields: ast::Field
             ToImplForDerive::new_error(span, "NodeKind variants must have be tuple or struct types")
         }
 
-        // Tuple structs must be Thing(Node<X>) with one field only 
+        // Tuple structs must be Thing(X: Parse) with one field only 
         // because if there's multiple nodes it's ambiguous whose 
         // Span to use so you need to add a Span and at that point 
         // just make it a struct for simplicity dawg
@@ -107,7 +110,7 @@ fn generate_field_parse_code(span: Span, ident: TokenStream2, fields: ast::Field
                 return ToImplForDerive::new_error(
                     span,
                     "NodeKind variants must either be tuples with exactly one \
-                    Node<Smth> field or structs with a `span: Span` field"
+                    parseable field or structs with a `span: Span` field"
                 );
             }
             let first_ty = match get_first_node_field_for_peeking(&fields) {
@@ -122,7 +125,7 @@ fn generate_field_parse_code(span: Span, ident: TokenStream2, fields: ast::Field
                     #ident (a) => a.span(),
                 },
                 parse_impl: quote! {
-                    Node::from(#ident(<#first_ty>::parse(tokenizer)))
+                    #ident(<#first_ty>::parse(tokenizer))
                 },
                 peek_impl: quote! {
                     <#first_ty>::peek(tokenizer)
@@ -151,26 +154,25 @@ fn generate_field_parse_code(span: Span, ident: TokenStream2, fields: ast::Field
                 // Destructuring just needs the name
                 destructure.extend(quote! { #ident, });
 
-                // If this type is a Node, deal with it like that
-                if let Some(ty) = extract_node_type(&v.ty) {
-                    children_result.extend(quote! {
-                        res.extend(#ident.children());
-                    });
-                    parse_fields.extend(quote! {
-                        #ident: Node::from(<#ty>::parse(tokenizer)),
-                    });
-                }
                 // Span fields are parsed specially
-                else if ident == "span" {
+                if ident == "span" {
                     parse_fields.extend(quote! {
                         #ident: tokenizer.span_from(start),
                     });
                 }
-                // Otherwise use Default to construct whatever this field is
+                // Otherwise parse normally
                 else {
-                    parse_fields.extend(quote! {
-                        #ident: Default::default(),
+                    children_result.extend(quote! {
+                        res.extend(#ident.children());
                     });
+                    parse_fields.extend(quote! {
+                        #ident: prolangine::parse::node::Parse::parse(tokenizer),
+                    });
+
+                    // todo: allow Default for non-parseable fields
+                    // parse_fields.extend(quote! {
+                    //     #ident: Default::default(),
+                    // });
                 }
             }
             children_result.extend(quote! { res });
@@ -189,7 +191,7 @@ fn generate_field_parse_code(span: Span, ident: TokenStream2, fields: ast::Field
                 },
                 parse_impl: quote! {
                     let start = tokenizer.start();
-                    Node::from(#ident { #parse_fields })
+                    #ident { #parse_fields }
                 },
                 peek_impl: quote! {
                     <#first_ty>::peek(tokenizer)
@@ -260,7 +262,7 @@ pub fn derive_node_kind(input: TokenStream) -> TokenStream {
     let span_match_impl = gen.span_match_impl;
     quote! {
         impl prolangine::parse::node::Parse<#token_type> for #for_item {
-            fn parse<I>(tokenizer: &mut I) -> prolangine::parse::node::Node<Self>
+            fn parse<I>(tokenizer: &mut I) -> Self
                 where
                     Self: Sized,
                     I: prolangine::parse::token::TokenIterator<#token_type>
@@ -277,7 +279,7 @@ pub fn derive_node_kind(input: TokenStream) -> TokenStream {
         }
 
         impl prolangine::parse::node::NodeKind for #for_item {
-            fn children<'a>(&'a self) -> Vec<prolangine::parse::node::Node<dyn prolangine::parse::node::NodeKind + 'a>> {
+            fn children(&self) -> Vec<&dyn prolangine::parse::node::NodeKind> {
                 match self {
                     #children_match_impl
                 }
@@ -419,7 +421,7 @@ pub fn create_token_nodes(args: TokenStream, input: TokenStream) -> TokenStream 
             vec![]
         });
 
-        ty = use_generic_parameter.then(|| quote! { prolangine::parse::node::Node<N> }).unwrap_or(ty);
+        ty = use_generic_parameter.then(|| quote! { N }).unwrap_or(ty);
 
         result.extend(quote! {
             #[derive(Debug)]
@@ -429,7 +431,7 @@ pub fn create_token_nodes(args: TokenStream, input: TokenStream) -> TokenStream 
             }
 
             impl #generics_parse_def prolangine::parse::node::Parse<#token_name> for #node_name #generics_use {
-                fn parse<I>(tokenizer: &mut I) -> prolangine::parse::node::Node<Self>
+                fn parse<I>(tokenizer: &mut I) -> Self
                     where
                         Self: Sized,
                         I: prolangine::parse::token::TokenIterator<#token_name>
@@ -441,10 +443,10 @@ pub fn create_token_nodes(args: TokenStream, input: TokenStream) -> TokenStream 
                         let Some(#token_name::#variant_name #destructure) = token.into_token() else {
                             unreachable!();
                         };
-                        prolangine::parse::node::Node::from(#node_name {
+                        #node_name {
                             value: #parse_inner_impl,
                             span,
-                        })
+                        }
                     }
                     else {
                         prolangine::parse::node::Node::expected(#display_name, &token, span.clone())
@@ -460,7 +462,7 @@ pub fn create_token_nodes(args: TokenStream, input: TokenStream) -> TokenStream 
             }
 
             impl #generics_def prolangine::parse::node::NodeKind for #node_name #generics_use {
-                fn children<'a>(&'a self) -> Vec<prolangine::parse::node::Node<dyn NodeKind + 'a>> {
+                fn children(&self) -> Vec<&dyn NodeKind> {
                     #children_impl
                 }
                 fn span(&self) -> Span {

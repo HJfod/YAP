@@ -9,6 +9,14 @@ pub trait DisplayName {
     fn display_name(&self) -> String;
 }
 
+#[derive(Debug)]
+pub struct Error {
+    message: String,
+    span: Span,
+}
+
+pub type ParseResult<T> = Result<T, Vec<Error>>;
+
 /// The main trait for introducing a custom syntax for a language. The
 /// language's token kind should implement this trait.
 ///
@@ -23,7 +31,7 @@ pub trait TokenKind: Debug + Sized + DisplayName {
     /// Get the next token in the source iterator. This method is **not required**
     /// to run [`TokenKind::skip_to_next`]; it may assume that the next token
     /// starts where the cursor is currently pointing at
-    fn next(cursor: &mut SrcCursor) -> Token<Self>;
+    fn next(cursor: &mut SrcCursor) -> ParseResult<Token<Self>>;
 
     /// Skip to the next token; by default skips whitespace and C-like comments
     /// (`// line comment` and `/* block comment */`)
@@ -36,7 +44,6 @@ pub trait TokenKind: Debug + Sized + DisplayName {
 pub enum ParsedTokenKind<T: TokenKind> {
     Token(T),
     EOF(Option<String>),
-    Error(String),
 }
 
 #[derive(Debug)]
@@ -58,38 +65,17 @@ impl<T: TokenKind> Token<T> {
             span,
         }
     }
-    pub fn new_error<S: Display>(msg: S, span: Span) -> Self {
-        Self {
-            kind: ParsedTokenKind::Error(msg.to_string()),
-            span,
-        }
-    }
-    pub fn expected<W: Display, G: Display>(what: W, got: G, span: Span) -> Self {
-        Self {
-            kind: ParsedTokenKind::Error(format!("expected {what}, got {got}")),
-            span,
-        }
-    }
 
     pub fn as_token(&self) -> Option<&T> {
         match &self.kind {
             ParsedTokenKind::Token(t) => Some(t),
             ParsedTokenKind::EOF(_) => None,
-            ParsedTokenKind::Error(_) => None,
         }
     }
     pub fn as_eof(&self) -> Option<Option<&str>> {
         match &self.kind {
             ParsedTokenKind::Token(_) => None,
             ParsedTokenKind::EOF(s) => Some(s.as_deref()),
-            ParsedTokenKind::Error(_) => None,
-        }
-    }
-    pub fn as_error(&self) -> Option<&str> {
-        match &self.kind {
-            ParsedTokenKind::Token(_) => None,
-            ParsedTokenKind::EOF(_) => None,
-            ParsedTokenKind::Error(msg) => Some(msg),
         }
     }
 
@@ -103,21 +89,12 @@ impl<T: TokenKind> Token<T> {
         match self.kind {
             ParsedTokenKind::Token(t) => Some(t),
             ParsedTokenKind::EOF(_) => None,
-            ParsedTokenKind::Error(_) => None,
         }
     }
     pub fn into_eof(self) -> Option<Option<String>> {
         match self.kind {
             ParsedTokenKind::Token(_) => None,
             ParsedTokenKind::EOF(e) => Some(e),
-            ParsedTokenKind::Error(_) => None,
-        }
-    }
-    pub fn into_error(self) -> Option<String> {
-        match self.kind {
-            ParsedTokenKind::Token(_) => None,
-            ParsedTokenKind::EOF(_) => None,
-            ParsedTokenKind::Error(msg) => Some(msg),
         }
     }
     pub fn span(&self) -> Span {
@@ -126,9 +103,6 @@ impl<T: TokenKind> Token<T> {
 
     pub fn is_eof(&self) -> bool {
         matches!(self.kind, ParsedTokenKind::EOF(_))
-    }
-    pub fn is_error(&self) -> bool {
-        matches!(self.kind, ParsedTokenKind::Error(_))
     }
 }
 
@@ -139,9 +113,6 @@ impl<T: TokenKind> Display for Token<T> {
             ParsedTokenKind::EOF(name) => {
                 f.write_str(name.as_ref().map(|n| n.as_str()).unwrap_or("end-of-file"))
             }
-            ParsedTokenKind::Error(msg) => {
-                f.write_str(msg)
-            }
         }
     }
 }
@@ -150,7 +121,7 @@ impl<T: TokenKind> Display for Token<T> {
 /// Iterator because it can never return None (and also so `peek` is not `mut`)
 pub trait TokenIterator<T: TokenKind> {
     /// Get the next `Token` in the stream
-    fn next(&mut self) -> Token<T>;
+    fn next(&mut self) -> ParseResult<Token<T>>;
     /// Get the next upcoming `Token` in the stream without consuming it
     fn peek(&self) -> &Token<T>;
     /// Get the start position of the next `Token`
@@ -166,11 +137,11 @@ pub trait TokenIterator<T: TokenKind> {
 /// Turns an unparsed source file into tokens
 pub(crate) struct Tokenizer<'s, T: TokenKind> {
     cursor: SrcCursor<'s>,
-    next: Token<T>,
+    next: ParseResult<Token<T>>,
     last_end: usize,
 }
 impl<'s, T: TokenKind> Tokenizer<'s, T> {
-    fn fetch_next(cursor: &mut SrcCursor<'s>) -> Token<T> {
+    fn fetch_next(cursor: &mut SrcCursor<'s>) -> ParseResult<Token<T>> {
         T::skip_to_next(cursor);
         T::next(cursor)
     }
@@ -184,7 +155,7 @@ impl<'s, T: TokenKind> Tokenizer<'s, T> {
     }
 }
 impl<T: TokenKind> TokenIterator<T> for Tokenizer<'_, T> {
-    fn next(&mut self) -> Token<T> {
+    fn next(&mut self) -> ParseResult<Token<T>> {
         self.last_end = self.next.span().end();
         std::mem::replace(&mut self.next, Self::fetch_next(&mut self.cursor))
     }

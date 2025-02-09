@@ -10,7 +10,7 @@ use prolangine::{
             parse_matching,
             ParsedString, SeparatedOptTrailing
         },
-        node::{Node, NodeKind, ZeroOrMore},
+        node::{Error, Node, NodeKind, ZeroOrMore},
         token::{DisplayName, ParsedTokenKind, Token, TokenKind, TokenTree}
     },
     src::{Codebase, Span, SrcCursor}
@@ -111,6 +111,7 @@ pub enum AtomExpr {
     String(Node<StringToken>),
     Number(Node<NumberToken>),
     Ident(Node<IdentToken>),
+    Expected(Error),
 }
 
 #[derive(Debug, NodeKind)]

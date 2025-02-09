@@ -3,11 +3,6 @@ use std::fmt::{Debug, Display};
 use crate::src::Span;
 use super::token::{Token, TokenIterator, TokenKind};
 
-pub struct Error {
-    message: String,
-    span: Span,
-}
-
 impl Error {
     pub fn new<W: Display>(msg: W, span: Span) -> Self {
         Self { message: msg.to_string(), span }
@@ -22,12 +17,10 @@ pub trait NodeKind: Debug {
     fn children(&self) -> Vec<&dyn NodeKind>;
     /// Get the span (raw source code string) of this node
     fn span(&self) -> Span;
-    /// Get any errors this token may contain
-    fn errors(&self) -> Vec<Error>;
 }
 
 pub trait Parse<T: TokenKind>: NodeKind {
-    fn parse<I>(tokenizer: &mut I) -> Self
+    fn parse<I>(tokenizer: &mut I) -> ParseResult<Self>
         where
             Self: Sized,
             I: TokenIterator<T>;
@@ -41,8 +34,8 @@ pub trait Parse<T: TokenKind>: NodeKind {
 
 pub trait Parser<T: TokenKind> {
     fn tokenize_fully(self) -> Vec<Token<T>>;
-    fn parse<N: Parse<T>>(&mut self) -> N;
-    fn parse_fully<N: Parse<T>>(self) -> Result<N, Error>;
+    fn parse<N: Parse<T>>(&mut self) -> ParseResult<N>;
+    fn parse_fully<N: Parse<T>>(self) -> Result<N, Vec<Error>>;
 }
 
 impl<T: TokenKind, I: TokenIterator<T>> Parser<T> for I {
@@ -57,7 +50,7 @@ impl<T: TokenKind, I: TokenIterator<T>> Parser<T> for I {
         }
         res
     }
-    fn parse<N: Parse<T>>(&mut self) -> N {
+    fn parse<N: Parse<T>>(&mut self) -> ParseResult<N> {
         N::parse(self)
     }
     fn parse_fully<N: Parse<T>>(mut self) -> Result<N, Error> {
