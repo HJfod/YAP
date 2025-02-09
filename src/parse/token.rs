@@ -15,6 +15,15 @@ pub struct Error {
     span: Span,
 }
 
+impl Error {
+    pub fn new<W: Display>(msg: W, span: Span) -> Self {
+        Self { message: msg.to_string(), span }
+    }
+    pub fn expected<W: Display, G: Display>(what: W, got: G, span: Span) -> Self {
+        Self { message: format!("expected {what}, got {got}"), span }
+    }
+}
+
 pub type ParseResult<T> = Result<T, Vec<Error>>;
 
 /// The main trait for introducing a custom syntax for a language. The
@@ -123,7 +132,8 @@ pub trait TokenIterator<T: TokenKind> {
     /// Get the next `Token` in the stream
     fn next(&mut self) -> ParseResult<Token<T>>;
     /// Get the next upcoming `Token` in the stream without consuming it
-    fn peek(&self) -> &Token<T>;
+    /// Returns `None` if token parsing failed; EOF is a type of token!
+    fn peek(&self) -> Option<&Token<T>>;
     /// Get the start position of the next `Token`
     fn start(&self) -> usize;
     /// Get the span from `start` to the end of the last token returned
@@ -156,14 +166,18 @@ impl<'s, T: TokenKind> Tokenizer<'s, T> {
 }
 impl<T: TokenKind> TokenIterator<T> for Tokenizer<'_, T> {
     fn next(&mut self) -> ParseResult<Token<T>> {
-        self.last_end = self.next.span().end();
+        // We want to preserve whatever last_end was previously if parsing the 
+        // next token fails
+        if let Ok(ref v) = self.next {
+            self.last_end = v.span().end();
+        }
         std::mem::replace(&mut self.next, Self::fetch_next(&mut self.cursor))
     }
-    fn peek(&self) -> &Token<T> {
-        &self.next
+    fn peek(&self) -> Option<&Token<T>> {
+        self.next.as_ref().ok()
     }
     fn start(&self) -> usize {
-        self.next.span().start()
+        self.next.as_ref().map(|n| n.span().start()).unwrap_or(self.last_end)
     }
     fn span_from(&self, start: usize) -> Span {
        self.cursor.src().span(start..self.last_end)
@@ -209,15 +223,15 @@ impl<T: TokenKind> TokenTree<T> {
 }
 
 impl<T: TokenKind> TokenIterator<T> for TokenTree<T> {
-    fn next(&mut self) -> Token<T> {
+    fn next(&mut self) -> ParseResult<Token<T>> {
         self.last_end = self.next.span().end();
-        std::mem::replace(
+        Ok(std::mem::replace(
             &mut self.next,
             Self::fetch_next(&mut self.tokens, (self.eof.0.as_deref(), self.eof.1.clone()))
-        )
+        ))
     }
-    fn peek(&self) -> &Token<T> {
-        &self.next
+    fn peek(&self) -> Option<&Token<T>> {
+        Some(&self.next)
     }
     fn start(&self) -> usize {
         self.next.span().start()

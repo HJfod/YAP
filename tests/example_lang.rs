@@ -8,10 +8,10 @@ use prolangine::{
             parse_c_like_word,
             parse_delimited,
             parse_matching,
-            ParsedString, SeparatedOptTrailing
+            ParsedString
         },
-        node::{Error, Node, NodeKind, ZeroOrMore},
-        token::{DisplayName, ParsedTokenKind, Token, TokenKind, TokenTree}
+        node::ZeroOrMore,
+        token::{DisplayName, Error, ParseResult, ParsedTokenKind, Token, TokenKind, TokenTree}
     },
     src::{Codebase, Span, SrcCursor}
 };
@@ -42,31 +42,31 @@ pub enum ExampleLanguageToken {
 }
 
 impl TokenKind for ExampleLanguageToken {
-    fn next(cursor: &mut SrcCursor) -> Token<ExampleLanguageToken> {
+    fn next(cursor: &mut SrcCursor) -> ParseResult<Token<ExampleLanguageToken>> {
         let start = cursor.pos();
 
         // Check for EOF
         if cursor.peek().is_none() {
-            return Token::new_eof(None, cursor.span_from(start));
+            return Ok(Token::new_eof(None, cursor.span_from(start)));
         }
 
         // Identifiers & keywords
         if let Some(ident) = parse_c_like_word(cursor) {
-            return Token::new(Self::Ident(ident.into()), cursor.span_from(start));
+            return Ok(Token::new(Self::Ident(ident.into()), cursor.span_from(start)));
         }
 
         // Numbers
         if let Some((num, _)) = parse_c_like_num(cursor) {
             return match num.parse() {
-                Ok(n) => Token::new(Self::Number(n), cursor.span_from(start)),
-                Err(e) => Token::new_error(format!("invalid number {num} ({e})"), cursor.span_from(start)),
+                Ok(n) => Ok(Token::new(Self::Number(n), cursor.span_from(start))),
+                Err(e) => Err(vec![Error::new(format!("invalid number {num} ({e})"), cursor.span_from(start))]),
             }
         }
 
         // String literal
         if let Some(str) = parse_c_like_string(cursor) {
             return match str {
-                ParsedString::Parsed(str) => Token::new(Self::String(str), cursor.span_from(start)),
+                ParsedString::Parsed(str) => Ok(Token::new(Self::String(str), cursor.span_from(start))),
                 ParsedString::InvalidEscapeSequences(seqs) => {
                     // TODO: tokens can't contain multiple errors, so either
                     // a) Make that possible
@@ -75,49 +75,48 @@ impl TokenKind for ExampleLanguageToken {
                     // c) Include the errors in the String token
                     // d) Just deal with this
                     let (c, span) = seqs.into_iter().next().unwrap();
-                    Token::new_error(format!("invalid escape sequence '\\{c}'"), span)
+                    Err(vec![Error::new(format!("invalid escape sequence '\\{c}'"), span)])
                 }
-                ParsedString::Unterminated(span) => Token::new_error("unterminated string literal", span),
+                ParsedString::Unterminated(span) => Err(vec![Error::new("unterminated string literal", span)]),
             }
         }
 
         // Operators
         if let Some(op) = parse_matching(is_op_char, cursor) {
             return match op {
-                "==" => Token::new(Self::Eq, cursor.span_from(start)),
-                "+" => Token::new(Self::Plus, cursor.span_from(start)),
-                "-" => Token::new(Self::Minus, cursor.span_from(start)),
-                "=" => Token::new(Self::Assign, cursor.span_from(start)),
-                o => Token::new_error(format!("invalid operator '{o}'"), cursor.span_from(start)),
+                "==" => Ok(Token::new(Self::Eq, cursor.span_from(start))),
+                "+" => Ok(Token::new(Self::Plus, cursor.span_from(start))),
+                "-" => Ok(Token::new(Self::Minus, cursor.span_from(start))),
+                "=" => Ok(Token::new(Self::Assign, cursor.span_from(start))),
+                o => Err(vec![Error::new(format!("invalid operator '{o}'"), cursor.span_from(start))]),
             }
         }
 
         // Parenthesis
         if let Some(tree) = parse_delimited("(", ")", cursor) {
-            return Token::new(Self::Parenthesis(tree), cursor.span_from(start));
+            return Ok(Token::new(Self::Parenthesis(tree?), cursor.span_from(start)));
         }
 
-        Token::new_error(
+        Err(vec![Error::new(
             format!("invalid character '{}'", cursor.next().unwrap()),
             cursor.span_from(start)
-        )
+        )])
     }
 }
 
 #[derive(Debug, NodeKind)]
 #[parse(expected = "expression", token_type = "ExampleLanguageToken")]
 pub enum AtomExpr {
-    Closed(Node<Parenthesized<Expr>>),
-    String(Node<StringToken>),
-    Number(Node<NumberToken>),
-    Ident(Node<IdentToken>),
-    Expected(Error),
+    Closed(Parenthesized<Box<Expr>>),
+    String(StringToken),
+    Number(NumberToken),
+    Ident(IdentToken),
 }
 
 #[derive(Debug, NodeKind)]
 #[parse(expected = "expression", token_type = "ExampleLanguageToken")]
 pub enum Expr {
-    Atom(Node<AtomExpr>),
+    Atom(AtomExpr),
 }
 
 #[derive(Debug, NodeKind)]
@@ -180,12 +179,12 @@ impl DebugEq for Vec<Token<ExampleLanguageToken>> {
 fn parse_source_from_file() {
     let mut codebase = Codebase::new(Path::new("tests/src"));
     let src = codebase.add_src(Path::new("tests/src/test.example")).expect("Unable to read source");
-    if src.tokenize::<ExampleLanguageToken>().into_iter().any(|t| t.is_error()) {
-        panic!("tokenization produced errors");
+    if let Err(e) = src.tokenize::<ExampleLanguageToken>() {
+        panic!("tokenization produced errors: {e:?}");
     }
-    let node: Node<Expr> = src.parse();
-    if node.contains_errors() {
-        panic!("ran into errors: {:?}", node.get_errors());
+    match src.parse::<ExampleLanguageToken, Expr>() {
+        Ok(_node) => {}
+        Err(e) => panic!("parsing produced errors: {e:?}"),
     }
 }
 
@@ -201,7 +200,7 @@ fn parse_source_fail() {
     let src = codebase.add_src_from_memory("test", r#"
         a = @
     "#);
-    if src.tokenize::<ExampleLanguageToken>().into_iter().any(|t| t.is_error()) {
+    if src.tokenize::<ExampleLanguageToken>().is_err() {
         panic!("tokenization produced errors");
     }
 }
@@ -214,7 +213,7 @@ fn parse_source_from_memory() {
         print(num + 4)
         print("hi everyone")
     "#);
-    let tokens = src.tokenize::<ExampleLanguageToken>();
+    let tokens = src.tokenize::<ExampleLanguageToken>().unwrap();
     let result = tokens.debug_eq(
         vec![
             ExampleLanguageToken::Ident("num".into()),

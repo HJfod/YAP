@@ -5,7 +5,7 @@ use std::marker::PhantomData;
 use crate::src::{Span, SrcCursor};
 use unicode_xid::UnicodeXID;
 
-use super::{node::{NodeKind, Parse}, token::{Token, TokenIterator, TokenKind, TokenTree}};
+use super::{node::{NodeKind, Parse}, token::{Error, ParseResult, TokenIterator, TokenKind, TokenTree}};
 
 /// Skip C-like comments (`// ...` line comments and `/* ... */` block comments)
 /// in a source stream, as well as skipping whitespace
@@ -164,9 +164,10 @@ pub fn parse_delimited<T: TokenKind>(
     open: &str,
     close: &str,
     cursor: &mut SrcCursor,
-) -> Option<TokenTree<T>> {
+) -> Option<ParseResult<TokenTree<T>>> {
     if parse_exact(open, cursor).is_some() {
         let mut tokens = Vec::new();
+        let mut errors = Vec::new();
         let mut eof_start;
         loop {
             T::skip_to_next(cursor);
@@ -179,19 +180,40 @@ pub fn parse_delimited<T: TokenKind>(
             }
 
             // Check for EOF (unclosed delimited sequence)
-            let token = T::next(cursor);
-            if token.is_eof() {
-                tokens.push(Token::expected(close, &token, token.span()));
-                break;
+            match T::next(cursor) {
+                Ok(token) => {
+                    if token.is_eof() {
+                        errors.push(Error::expected(close, &token, token.span()));
+                        break;
+                    }
+                    // Otherwise push this token and keep looking
+                    tokens.push(token);
+                }
+                Err(e) => errors.extend(e),
             }
-
-            // Otherwise push this token and keep looking
-            tokens.push(token);
         }
-        Some(TokenTree::new(tokens, (Some(close), cursor.span_from(eof_start))))
+        if !errors.is_empty() {
+            return Some(Err(errors));
+        }
+        Some(Ok(TokenTree::new(tokens, (Some(close), cursor.span_from(eof_start)))))
     }
     else {
         None
+    }
+}
+
+pub fn try_parse_discard<T: TokenKind, N: Parse<T>>(tokenizer: &mut impl TokenIterator<T>, errors: &mut Vec<Error>) {
+    match N::parse(tokenizer) {
+        Ok(_) => {}
+        Err(e) => errors.extend(e),
+    }
+}
+pub fn try_parse_into_list<T: TokenKind, N: Parse<T>>(
+    tokenizer: &mut impl TokenIterator<T>, list: &mut Vec<N>, errors: &mut Vec<Error>
+) {
+    match N::parse(tokenizer) {
+        Ok(n) => if errors.is_empty() { list.push(n) }
+        Err(e) => errors.extend(e),
     }
 }
 
@@ -210,30 +232,35 @@ impl<
     N: NodeKind + Parse<T>,
     S: NodeKind + Parse<T>
 > Parse<T> for Separated<N, S> {
-    fn parse<I>(tokenizer: &mut I) -> Self
+    fn parse<I>(tokenizer: &mut I) -> ParseResult<Self>
         where
             Self: Sized,
             I: TokenIterator<T>
     {
         let start = tokenizer.start();
         if N::peek(tokenizer) {
-            let mut items = vec![N::parse(tokenizer)];
+            let mut items = vec![];
+            let mut errors = vec![];
+            try_parse_into_list(tokenizer, &mut items, &mut errors);
             while S::peek(tokenizer) {
-                S::parse(tokenizer);
-                items.push(N::parse(tokenizer));
+                try_parse_discard::<T, S>(tokenizer, &mut errors);
+                try_parse_into_list(tokenizer, &mut items, &mut errors);
             }
-            Self {
+            if !errors.is_empty() {
+                return Err(errors);
+            }
+            Ok(Self {
                 items,
                 span: tokenizer.span_from(start),
                 _phantom: PhantomData,
-            }
+            })
         }
         else {
-            Self {
+            Ok(Self {
                 items: vec![],
                 span: tokenizer.src().span(start..start),
                 _phantom: PhantomData,
-            }
+            })
         }
     }
     fn peek<I>(tokenizer: &I) -> bool
@@ -251,9 +278,6 @@ impl<N: NodeKind, S: NodeKind> NodeKind for Separated<N, S> {
     fn span(&self) -> Span {
         self.span.clone()
     }
-    fn errors(&self) -> Vec<super::node::Error> {
-        self.items.iter().flat_map(|i| i.errors()).collect()
-    }
 }
 
 /// List of nodes separated by another node with optional trailing separator
@@ -270,35 +294,40 @@ impl<
     N: NodeKind + Parse<T>,
     S: NodeKind + Parse<T>
 > Parse<T> for SeparatedOptTrailing<N, S> {
-    fn parse<I>(tokenizer: &mut I) -> Self
+    fn parse<I>(tokenizer: &mut I) -> ParseResult<Self>
         where
             Self: Sized,
             I: TokenIterator<T>
     {
         let start = tokenizer.start();
         if N::peek(tokenizer) {
-            let mut items = vec![N::parse(tokenizer)];
+            let mut items = vec![];
+            let mut errors = vec![];
+            try_parse_into_list(tokenizer, &mut items, &mut errors);
             while S::peek(tokenizer) {
-                S::parse(tokenizer);
+                try_parse_discard::<T, S>(tokenizer, &mut errors);
                 if N::peek(tokenizer) {
-                    items.push(N::parse(tokenizer));
+                    try_parse_into_list(tokenizer, &mut items, &mut errors);
                 }
                 else {
                     break;
                 }
             }
-            Self {
+            if !errors.is_empty() {
+                return Err(errors);
+            }
+            Ok(Self {
                 items,
                 span: tokenizer.span_from(start),
                 _phantom: PhantomData,
-            }
+            })
         }
         else {
-            Self {
+            Ok(Self {
                 items: vec![],
                 span: tokenizer.src().span(start..start),
                 _phantom: PhantomData,
-            }
+            })
         }
     }
     fn peek<I>(tokenizer: &I) -> bool
@@ -315,8 +344,5 @@ impl<N: NodeKind, S: NodeKind> NodeKind for SeparatedOptTrailing<N, S> {
     }
     fn span(&self) -> Span {
         self.span.clone()
-    }
-    fn errors(&self) -> Vec<super::node::Error> {
-        self.items.iter().flat_map(|i| i.errors()).collect()
     }
 }

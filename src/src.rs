@@ -9,7 +9,7 @@ use std::{
     ops::Range,
     path::{Path, PathBuf},
 };
-use crate::parse::{node::{Error, Parse, Parser}, token::{Token, TokenKind, Tokenizer}};
+use crate::parse::{node::{Parse, Parser}, token::{ParseResult, Token, TokenKind, Tokenizer}};
 
 pub enum Underline {
     /// Error squiggle
@@ -188,11 +188,11 @@ impl Src {
 
     /// Tokenize this source file according to the Language's token type. 
     /// Does not include the EOF token
-    pub fn tokenize<T: TokenKind>(&self) -> Vec<Token<T>> {
+    pub fn tokenize<T: TokenKind>(&self) -> ParseResult<Vec<Token<T>>> {
         Tokenizer::new(self).tokenize_fully()
     }
     /// Parse this source file into a type
-    pub fn parse<T: TokenKind, N: Parse<T>>(&self) -> Result<N, Error> {
+    pub fn parse<T: TokenKind, N: Parse<T>>(&self) -> ParseResult<N> {
         Tokenizer::new(self).parse_fully()
     }
 }
