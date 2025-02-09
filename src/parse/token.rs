@@ -142,6 +142,10 @@ pub trait TokenIterator<T: TokenKind> {
     fn eof_name(&self) -> String;
 
     fn src(&self) -> SrcID;
+
+    fn is_eof(&self) -> bool {
+        self.peek().map(|token| token.is_eof()).unwrap_or(false)
+    }
 }
 
 /// Turns an unparsed source file into tokens

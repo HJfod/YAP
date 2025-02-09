@@ -8,9 +8,9 @@ use prolangine::{
             parse_c_like_word,
             parse_delimited,
             parse_matching,
-            ParsedString
+            ParsedString,
+            ZeroOrMore,
         },
-        node::ZeroOrMore,
         token::{DisplayName, Error, ParseResult, ParsedTokenKind, Token, TokenKind, TokenTree}
     },
     src::{Codebase, Span, SrcCursor}
@@ -182,7 +182,7 @@ fn parse_source_from_file() {
     if let Err(e) = src.tokenize::<ExampleLanguageToken>() {
         panic!("tokenization produced errors: {e:?}");
     }
-    match src.parse::<ExampleLanguageToken, Expr>() {
+    match src.parse::<ExampleLanguageToken, ExprList>() {
         Ok(_node) => {}
         Err(e) => panic!("parsing produced errors: {e:?}"),
     }

@@ -1,7 +1,7 @@
 
 use std::fmt::Debug;
 use crate::src::Span;
-use super::token::{Error, ParseResult, Token, TokenIterator, TokenKind};
+use super::{common::try_parse_into_list, token::{Error, ParseResult, Token, TokenIterator, TokenKind}};
 
 pub trait NodeKind: Debug {
     /// Get the children of this AST node
@@ -183,92 +183,5 @@ impl<T: TokenKind> Parse<T> for Token<T> {
     {
         // The stream will always contain more tokens because EOF is a token
         true
-    }
-}
-
-#[derive(Debug)]
-pub enum Maybe<N: NodeKind> {
-    Some(N),
-    None(Span),
-}
-
-impl<T: TokenKind, N: NodeKind + Parse<T>> Parse<T> for Maybe<N> {
-    fn parse<I>(tokenizer: &mut I) -> ParseResult<Self>
-        where
-            Self: Sized,
-            I: TokenIterator<T>
-    {
-        let start = tokenizer.start();
-        if N::peek(tokenizer) {
-            Ok(Self::Some(N::parse(tokenizer)?))
-        }
-        else {
-            Ok(Self::None(tokenizer.span_from(start)))
-        }
-    }
-    fn peek<I>(tokenizer: &I) -> bool
-        where
-            Self: Sized,
-            I: TokenIterator<T>
-    {
-        N::peek(tokenizer)
-    }
-}
-impl<N: NodeKind> NodeKind for Maybe<N> {
-    fn children(&self) -> Vec<&dyn NodeKind> {
-        match self {
-            Self::Some(n) => n.children(),
-            Self::None(_) => vec![],
-        }
-    }
-    fn span(&self) -> Span {
-        match self {
-            Self::Some(n) => n.span(),
-            Self::None(span) => span.clone(),
-        }
-    }
-}
-
-/// Zero or more of specific type of node
-#[derive(Debug)]
-pub struct ZeroOrMore<N: NodeKind> {
-    items: Vec<N>,
-    span: Span,
-}
-
-impl<N: NodeKind> NodeKind for ZeroOrMore<N> {
-    fn children(&self) -> Vec<&dyn NodeKind> {
-        self.items.iter().map(|n| n as &dyn NodeKind).collect()
-    }
-    fn span(&self) -> Span {
-        self.span.clone()
-    }
-}
-impl<T: TokenKind, N: NodeKind + Parse<T>> Parse<T> for ZeroOrMore<N> {
-    fn parse<I>(tokenizer: &mut I) -> ParseResult<Self>
-        where
-            Self: Sized,
-            I: TokenIterator<T>
-    {
-        let start = tokenizer.start();
-        let mut items = vec![];
-        let mut errors = vec![];
-        while N::peek(tokenizer) {
-            match N::parse(tokenizer) {
-                Ok(item) => if errors.is_empty() { items.push(item) }
-                Err(e) => errors.extend(e),
-            }
-        }
-        Ok(Self {
-            items,
-            span: tokenizer.span_from(start),
-        })
-    }
-    fn peek<I>(tokenizer: &I) -> bool
-        where
-            Self: Sized,
-            I: TokenIterator<T>
-    {
-        N::peek(tokenizer)
     }
 }

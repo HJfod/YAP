@@ -195,7 +195,7 @@ pub fn parse_delimited<T: TokenKind>(
         if !errors.is_empty() {
             return Some(Err(errors));
         }
-        Some(Ok(TokenTree::new(tokens, (Some(close), cursor.span_from(eof_start)))))
+        Some(Ok(TokenTree::new(tokens, (Some(&format!("'{}'", close)), cursor.span_from(eof_start)))))
     }
     else {
         None
@@ -217,6 +217,94 @@ pub fn try_parse_into_list<T: TokenKind, N: Parse<T>>(
     }
 }
 
+#[derive(Debug)]
+pub enum Maybe<N: NodeKind> {
+    Some(N),
+    None(Span),
+}
+
+impl<T: TokenKind, N: NodeKind + Parse<T>> Parse<T> for Maybe<N> {
+    fn parse<I>(tokenizer: &mut I) -> ParseResult<Self>
+        where
+            Self: Sized,
+            I: TokenIterator<T>
+    {
+        let start = tokenizer.start();
+        if N::peek(tokenizer) {
+            Ok(Self::Some(N::parse(tokenizer)?))
+        }
+        else {
+            Ok(Self::None(tokenizer.span_from(start)))
+        }
+    }
+    fn peek<I>(tokenizer: &I) -> bool
+        where
+            Self: Sized,
+            I: TokenIterator<T>
+    {
+        N::peek(tokenizer)
+    }
+}
+impl<N: NodeKind> NodeKind for Maybe<N> {
+    fn children(&self) -> Vec<&dyn NodeKind> {
+        match self {
+            Self::Some(n) => n.children(),
+            Self::None(_) => vec![],
+        }
+    }
+    fn span(&self) -> Span {
+        match self {
+            Self::Some(n) => n.span(),
+            Self::None(span) => span.clone(),
+        }
+    }
+}
+
+/// Zero or more of specific type of node. Wants to parse the entire source 
+/// stream!
+#[derive(Debug)]
+pub struct ZeroOrMore<N: NodeKind> {
+    items: Vec<N>,
+    span: Span,
+}
+
+impl<N: NodeKind> NodeKind for ZeroOrMore<N> {
+    fn children(&self) -> Vec<&dyn NodeKind> {
+        self.items.iter().map(|n| n as &dyn NodeKind).collect()
+    }
+    fn span(&self) -> Span {
+        self.span.clone()
+    }
+}
+impl<T: TokenKind, N: NodeKind + Parse<T>> Parse<T> for ZeroOrMore<N> {
+    fn parse<I>(tokenizer: &mut I) -> ParseResult<Self>
+        where
+            Self: Sized,
+            I: TokenIterator<T>
+    {
+        let start = tokenizer.start();
+        let mut items = vec![];
+        let mut errors = vec![];
+        while !tokenizer.is_eof() {
+            try_parse_into_list(tokenizer, &mut items, &mut errors);
+        }
+        if !errors.is_empty() {
+            return Err(errors);
+        }
+        Ok(Self {
+            items,
+            span: tokenizer.span_from(start),
+        })
+    }
+    fn peek<I>(tokenizer: &I) -> bool
+        where
+            Self: Sized,
+            I: TokenIterator<T>
+    {
+        N::peek(tokenizer)
+    }
+}
+
 /// List of nodes separated by another node.
 /// * **NOTE**: Use `SeparatedOptTrailing` if you want to allow trailing separators
 /// * **NOTE**: the separator nodes are discarded and aren't actually stored!
@@ -227,6 +315,14 @@ pub struct Separated<N: NodeKind, S: NodeKind> {
     _phantom: PhantomData<S>,
 }
 
+impl<N: NodeKind, S: NodeKind> NodeKind for Separated<N, S> {
+    fn children(&self) -> Vec<&dyn NodeKind> {
+        self.items.iter().map(|n| n as &dyn NodeKind).collect()
+    }
+    fn span(&self) -> Span {
+        self.span.clone()
+    }
+}
 impl<
     T: TokenKind,
     N: NodeKind + Parse<T>,
@@ -242,7 +338,7 @@ impl<
             let mut items = vec![];
             let mut errors = vec![];
             try_parse_into_list(tokenizer, &mut items, &mut errors);
-            while S::peek(tokenizer) {
+            while !tokenizer.is_eof() {
                 try_parse_discard::<T, S>(tokenizer, &mut errors);
                 try_parse_into_list(tokenizer, &mut items, &mut errors);
             }
@@ -271,14 +367,6 @@ impl<
         N::peek(tokenizer)
     }
 }
-impl<N: NodeKind, S: NodeKind> NodeKind for Separated<N, S> {
-    fn children(&self) -> Vec<&dyn NodeKind> {
-        self.items.iter().map(|n| n as &dyn NodeKind).collect()
-    }
-    fn span(&self) -> Span {
-        self.span.clone()
-    }
-}
 
 /// List of nodes separated by another node with optional trailing separator
 /// * **NOTE**: the separator nodes are discarded and aren't actually stored!
@@ -289,6 +377,14 @@ pub struct SeparatedOptTrailing<N: NodeKind, S: NodeKind> {
     _phantom: PhantomData<S>,
 }
 
+impl<N: NodeKind, S: NodeKind> NodeKind for SeparatedOptTrailing<N, S> {
+    fn children(&self) -> Vec<&dyn NodeKind> {
+        self.items.iter().map(|n| n as &dyn NodeKind).collect()
+    }
+    fn span(&self) -> Span {
+        self.span.clone()
+    }
+}
 impl<
     T: TokenKind,
     N: NodeKind + Parse<T>,
@@ -304,13 +400,10 @@ impl<
             let mut items = vec![];
             let mut errors = vec![];
             try_parse_into_list(tokenizer, &mut items, &mut errors);
-            while S::peek(tokenizer) {
+            while !tokenizer.is_eof() {
                 try_parse_discard::<T, S>(tokenizer, &mut errors);
-                if N::peek(tokenizer) {
+                if !tokenizer.is_eof() {
                     try_parse_into_list(tokenizer, &mut items, &mut errors);
-                }
-                else {
-                    break;
                 }
             }
             if !errors.is_empty() {
@@ -336,13 +429,5 @@ impl<
             I: TokenIterator<T>
     {
         N::peek(tokenizer)
-    }
-}
-impl<N: NodeKind, S: NodeKind> NodeKind for SeparatedOptTrailing<N, S> {
-    fn children(&self) -> Vec<&dyn NodeKind> {
-        self.items.iter().map(|n| n as &dyn NodeKind).collect()
-    }
-    fn span(&self) -> Span {
-        self.span.clone()
     }
 }
