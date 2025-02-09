@@ -9,7 +9,7 @@ use std::{
     ops::Range,
     path::{Path, PathBuf},
 };
-use crate::parse::{node::{Node, Parse, Parser}, token::{Token, TokenKind, Tokenizer}};
+use crate::parse::{node::{Error, Parse, Parser}, token::{Token, TokenKind, Tokenizer}};
 
 pub enum Underline {
     /// Error squiggle
@@ -192,7 +192,7 @@ impl Src {
         Tokenizer::new(self).tokenize_fully()
     }
     /// Parse this source file into a type
-    pub fn parse<T: TokenKind, N: Parse<T>>(&self) -> Node<N> {
+    pub fn parse<T: TokenKind, N: Parse<T>>(&self) -> Result<N, Error> {
         Tokenizer::new(self).parse_fully()
     }
 }

@@ -8,9 +8,9 @@ use prolangine::{
             parse_c_like_word,
             parse_delimited,
             parse_matching,
-            ParsedString
+            ParsedString, SeparatedOptTrailing
         },
-        node::{Node, NodeKind},
+        node::{Node, NodeKind, ZeroOrMore},
         token::{DisplayName, ParsedTokenKind, Token, TokenKind, TokenTree}
     },
     src::{Codebase, Span, SrcCursor}
@@ -117,6 +117,13 @@ pub enum AtomExpr {
 #[parse(expected = "expression", token_type = "ExampleLanguageToken")]
 pub enum Expr {
     Atom(Node<AtomExpr>),
+}
+
+#[derive(Debug, NodeKind)]
+#[parse(token_type = "ExampleLanguageToken")]
+pub struct ExprList {
+    exprs: ZeroOrMore<Expr>,
+    span: Span,
 }
 
 trait DebugEq {

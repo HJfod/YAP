@@ -5,7 +5,7 @@ use std::marker::PhantomData;
 use crate::src::{Span, SrcCursor};
 use unicode_xid::UnicodeXID;
 
-use super::{node::{Node, NodeKind, Parse}, token::{Token, TokenIterator, TokenKind, TokenTree}};
+use super::{node::{NodeKind, Parse}, token::{Token, TokenIterator, TokenKind, TokenTree}};
 
 /// Skip C-like comments (`// ...` line comments and `/* ... */` block comments)
 /// in a source stream, as well as skipping whitespace
@@ -200,7 +200,7 @@ pub fn parse_delimited<T: TokenKind>(
 /// * **NOTE**: the separator nodes are discarded and aren't actually stored!
 #[derive(Debug)]
 pub struct Separated<N: NodeKind, S: NodeKind> {
-    items: Vec<Node<N>>,
+    items: Vec<N>,
     span: Span,
     _phantom: PhantomData<S>,
 }
@@ -210,7 +210,7 @@ impl<
     N: NodeKind + Parse<T>,
     S: NodeKind + Parse<T>
 > Parse<T> for Separated<N, S> {
-    fn parse<I>(tokenizer: &mut I) -> Node<Self>
+    fn parse<I>(tokenizer: &mut I) -> Self
         where
             Self: Sized,
             I: TokenIterator<T>
@@ -222,18 +222,18 @@ impl<
                 S::parse(tokenizer);
                 items.push(N::parse(tokenizer));
             }
-            Node::from(Self {
+            Self {
                 items,
                 span: tokenizer.span_from(start),
                 _phantom: PhantomData,
-            })
+            }
         }
         else {
-            Node::from(Self {
+            Self {
                 items: vec![],
                 span: tokenizer.src().span(start..start),
                 _phantom: PhantomData,
-            })
+            }
         }
     }
     fn peek<I>(tokenizer: &I) -> bool
@@ -245,11 +245,14 @@ impl<
     }
 }
 impl<N: NodeKind, S: NodeKind> NodeKind for Separated<N, S> {
-    fn children<'a>(&'a self) -> Vec<Node<dyn NodeKind + 'a>> {
-        self.items.iter().map(|n| n.clone_dyn()).collect()
+    fn children(&self) -> Vec<&dyn NodeKind> {
+        self.items.iter().map(|n| n as &dyn NodeKind).collect()
     }
     fn span(&self) -> Span {
         self.span.clone()
+    }
+    fn errors(&self) -> Vec<super::node::Error> {
+        self.items.iter().flat_map(|i| i.errors()).collect()
     }
 }
 
@@ -257,7 +260,7 @@ impl<N: NodeKind, S: NodeKind> NodeKind for Separated<N, S> {
 /// * **NOTE**: the separator nodes are discarded and aren't actually stored!
 #[derive(Debug)]
 pub struct SeparatedOptTrailing<N: NodeKind, S: NodeKind> {
-    items: Vec<Node<N>>,
+    items: Vec<N>,
     span: Span,
     _phantom: PhantomData<S>,
 }
@@ -267,7 +270,7 @@ impl<
     N: NodeKind + Parse<T>,
     S: NodeKind + Parse<T>
 > Parse<T> for SeparatedOptTrailing<N, S> {
-    fn parse<I>(tokenizer: &mut I) -> Node<Self>
+    fn parse<I>(tokenizer: &mut I) -> Self
         where
             Self: Sized,
             I: TokenIterator<T>
@@ -284,18 +287,18 @@ impl<
                     break;
                 }
             }
-            Node::from(Self {
+            Self {
                 items,
                 span: tokenizer.span_from(start),
                 _phantom: PhantomData,
-            })
+            }
         }
         else {
-            Node::from(Self {
+            Self {
                 items: vec![],
                 span: tokenizer.src().span(start..start),
                 _phantom: PhantomData,
-            })
+            }
         }
     }
     fn peek<I>(tokenizer: &I) -> bool
@@ -307,10 +310,13 @@ impl<
     }
 }
 impl<N: NodeKind, S: NodeKind> NodeKind for SeparatedOptTrailing<N, S> {
-    fn children<'a>(&'a self) -> Vec<Node<dyn NodeKind + 'a>> {
-        self.items.iter().map(|n| n.clone_dyn()).collect()
+    fn children(&self) -> Vec<&dyn NodeKind> {
+        self.items.iter().map(|n| n as &dyn NodeKind).collect()
     }
     fn span(&self) -> Span {
         self.span.clone()
+    }
+    fn errors(&self) -> Vec<super::node::Error> {
+        self.items.iter().flat_map(|i| i.errors()).collect()
     }
 }
