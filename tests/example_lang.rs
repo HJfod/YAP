@@ -116,6 +116,12 @@ pub enum AtomExpr {
 #[derive(Debug, NodeKind)]
 #[parse(expected = "expression", token_type = "ExampleLanguageToken")]
 pub enum Expr {
+    BinOp {
+        lhs: AtomExpr,
+        op: Token<ExampleLanguageToken>,
+        rhs: AtomExpr,
+        span: Span,
+    },
     Atom(AtomExpr),
 }
 
