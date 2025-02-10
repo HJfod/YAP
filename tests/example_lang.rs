@@ -20,6 +20,14 @@ fn is_op_char(ch: char) -> bool {
     matches!(ch, '+' | '-' | '=')
 }
 
+#[derive(Debug, PartialEq)]
+pub enum BinOp {
+    Plus,
+    Minus,
+    Assign,
+    Eq,
+}
+
 #[create_token_nodes]
 pub enum ExampleLanguageToken {
     Number(f64),
@@ -28,14 +36,8 @@ pub enum ExampleLanguageToken {
     #[token(display_name = "identifier")]
     Ident(String),
 
-    #[token(display_name = "'+'")]
-    Plus,
-    #[token(display_name = "'-'")]
-    Minus,
-    #[token(display_name = "'='")]
-    Assign,
-    #[token(display_name = "'=='")]
-    Eq,
+    #[token(display_name = "operator")]
+    BinOp(BinOp),
 
     #[token(node = "Parenthesized<T>")]
     Parenthesis(TokenTree<ExampleLanguageToken>),
@@ -84,10 +86,10 @@ impl TokenKind for ExampleLanguageToken {
         // Operators
         if let Some(op) = parse_matching(is_op_char, cursor) {
             return match op {
-                "==" => Ok(Token::new(Self::Eq, cursor.span_from(start))),
-                "+" => Ok(Token::new(Self::Plus, cursor.span_from(start))),
-                "-" => Ok(Token::new(Self::Minus, cursor.span_from(start))),
-                "=" => Ok(Token::new(Self::Assign, cursor.span_from(start))),
+                "==" => Ok(Token::new(Self::BinOp(BinOp::Eq), cursor.span_from(start))),
+                "+" => Ok(Token::new(Self::BinOp(BinOp::Plus), cursor.span_from(start))),
+                "-" => Ok(Token::new(Self::BinOp(BinOp::Minus), cursor.span_from(start))),
+                "=" => Ok(Token::new(Self::BinOp(BinOp::Assign), cursor.span_from(start))),
                 o => Err(vec![Error::new(format!("invalid operator '{o}'"), cursor.span_from(start))]),
             }
         }
@@ -118,7 +120,7 @@ pub enum AtomExpr {
 pub enum Expr {
     BinOp {
         lhs: AtomExpr,
-        op: Token<ExampleLanguageToken>,
+        op: BinOpToken,
         rhs: AtomExpr,
         span: Span,
     },
@@ -145,10 +147,7 @@ impl DebugEq for Token<ExampleLanguageToken> {
                 (ExampleLanguageToken::Number(a), ExampleLanguageToken::Number(b)) => a == b,
                 (ExampleLanguageToken::Ident(a), ExampleLanguageToken::Ident(b)) => a == b,
                 (ExampleLanguageToken::String(a), ExampleLanguageToken::String(b)) => a == b,
-                (ExampleLanguageToken::Plus, ExampleLanguageToken::Plus) => true,
-                (ExampleLanguageToken::Minus, ExampleLanguageToken::Minus) => true,
-                (ExampleLanguageToken::Assign, ExampleLanguageToken::Assign) => true,
-                (ExampleLanguageToken::Eq, ExampleLanguageToken::Eq) => true,
+                (ExampleLanguageToken::BinOp(a), ExampleLanguageToken::BinOp(b)) => a == b,
                 (ExampleLanguageToken::Parenthesis(a), ExampleLanguageToken::Parenthesis(b)) => {
                     a.into_items().debug_eq(b.into_items())?;
                     true
@@ -223,12 +222,12 @@ fn parse_source_from_memory() {
     let result = tokens.debug_eq(
         vec![
             ExampleLanguageToken::Ident("num".into()),
-            ExampleLanguageToken::Assign,
+            ExampleLanguageToken::BinOp(BinOp::Assign),
             ExampleLanguageToken::Number(2.0),
             ExampleLanguageToken::Ident("print".into()),
             ExampleLanguageToken::Parenthesis(TokenTree::new(vec![
                 ExampleLanguageToken::Ident("num".into()),
-                ExampleLanguageToken::Plus,
+                ExampleLanguageToken::BinOp(BinOp::Plus),
                 ExampleLanguageToken::Number(4.0),
             ].into_iter().map(|t| Token::new(t, src.span(0..0))).collect(), (Some(")"), src.span(0..0)))),
             ExampleLanguageToken::Ident("print".into()),

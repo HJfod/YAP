@@ -1,7 +1,7 @@
 
 use std::fmt::Debug;
 use crate::src::Span;
-use super::{common::try_parse_into_list, token::{Error, ParseResult, Token, TokenIterator, TokenKind}};
+use super::token::{Error, ParseResult, Token, TokenIterator, TokenKind};
 
 pub trait NodeKind: Debug {
     /// Get the children of this AST node
