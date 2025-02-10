@@ -1,5 +1,5 @@
 use std::path::Path;
-use prolangine_macros::{create_token_nodes, NodeKind};
+use prolangine_macros::{create_token_nodes, NodeKind, Parse};
 use prolangine::{
     parse::{
         common::{
@@ -7,25 +7,17 @@ use prolangine::{
             parse_c_like_string,
             parse_c_like_word,
             parse_delimited,
+            parse_exact,
             parse_matching,
             ParsedString,
-            ZeroOrMore,
-        },
-        token::{DisplayName, Error, ParseResult, ParsedTokenKind, Token, TokenKind, TokenTree}
+            SeparatedOptTrailing,
+        }, node::{NodeKind, Parse}, token::{DisplayName, Error, ParseResult, ParsedTokenKind, Token, TokenIterator, TokenKind, TokenTree}
     },
     src::{Codebase, Span, SrcCursor}
 };
 
 fn is_op_char(ch: char) -> bool {
     matches!(ch, '+' | '-' | '=')
-}
-
-#[derive(Debug, PartialEq)]
-pub enum BinOp {
-    Plus,
-    Minus,
-    Assign,
-    Eq,
 }
 
 #[create_token_nodes]
@@ -36,8 +28,19 @@ pub enum ExampleLanguageToken {
     #[token(display_name = "identifier")]
     Ident(String),
 
-    #[token(display_name = "operator")]
-    BinOp(BinOp),
+    #[token(display_name = "'+'")]
+    Plus,
+    #[token(display_name = "'-'")]
+    Minus,
+    #[token(display_name = "=")]
+    Assign,
+    #[token(display_name = "==")]
+    Eq,
+
+    #[token(display_name = "semicolon")]
+    Semicolon,
+    #[token(display_name = "comma")]
+    Comma,
 
     #[token(node = "Parenthesized<T>")]
     Parenthesis(TokenTree<ExampleLanguageToken>),
@@ -83,13 +86,20 @@ impl TokenKind for ExampleLanguageToken {
             }
         }
 
+        if parse_exact(";", cursor).is_some() {
+            return Ok(Token::new(Self::Semicolon, cursor.span_from(start)));
+        }
+        if parse_exact(",", cursor).is_some() {
+            return Ok(Token::new(Self::Comma, cursor.span_from(start)));
+        }
+
         // Operators
         if let Some(op) = parse_matching(is_op_char, cursor) {
             return match op {
-                "==" => Ok(Token::new(Self::BinOp(BinOp::Eq), cursor.span_from(start))),
-                "+" => Ok(Token::new(Self::BinOp(BinOp::Plus), cursor.span_from(start))),
-                "-" => Ok(Token::new(Self::BinOp(BinOp::Minus), cursor.span_from(start))),
-                "=" => Ok(Token::new(Self::BinOp(BinOp::Assign), cursor.span_from(start))),
+                "==" => Ok(Token::new(Self::Eq, cursor.span_from(start))),
+                "+" => Ok(Token::new(Self::Plus, cursor.span_from(start))),
+                "-" => Ok(Token::new(Self::Minus, cursor.span_from(start))),
+                "=" => Ok(Token::new(Self::Assign, cursor.span_from(start))),
                 o => Err(vec![Error::new(format!("invalid operator '{o}'"), cursor.span_from(start))]),
             }
         }
@@ -106,7 +116,47 @@ impl TokenKind for ExampleLanguageToken {
     }
 }
 
-#[derive(Debug, NodeKind)]
+#[derive(Debug, NodeKind, Parse)]
+#[parse(expected = "operator", token_type = "ExampleLanguageToken")]
+pub enum BinOp {
+    Plus(PlusToken),
+    Minus(MinusToken),
+    Assign(AssignToken),
+    Eq(EqToken),
+}
+
+impl BinOp {
+    pub fn peek_precedence<I: TokenIterator<ExampleLanguageToken>>(tokenizer: &I) -> Option<usize> {
+        match tokenizer.peek().and_then(|token| token.as_token()) {
+            Some(token) => {
+                match token {
+                    ExampleLanguageToken::Plus => Some(2),
+                    ExampleLanguageToken::Minus => Some(2),
+                    ExampleLanguageToken::Eq => Some(1),
+                    ExampleLanguageToken::Assign => Some(0),
+                    _ => None,
+                }
+            }
+            None => None
+        }
+    }
+    pub fn peek_rtl<I: TokenIterator<ExampleLanguageToken>>(tokenizer: &I) -> Option<bool> {
+        match tokenizer.peek().and_then(|token| token.as_token()) {
+            Some(token) => {
+                match token {
+                    ExampleLanguageToken::Plus => Some(false),
+                    ExampleLanguageToken::Minus => Some(false),
+                    ExampleLanguageToken::Eq => Some(false),
+                    ExampleLanguageToken::Assign => Some(true),
+                    _ => None,
+                }
+            }
+            None => None
+        }
+    }
+}
+
+#[derive(Debug, NodeKind, Parse)]
 #[parse(expected = "expression", token_type = "ExampleLanguageToken")]
 pub enum AtomExpr {
     Closed(Parenthesized<Box<Expr>>),
@@ -117,20 +167,121 @@ pub enum AtomExpr {
 
 #[derive(Debug, NodeKind)]
 #[parse(expected = "expression", token_type = "ExampleLanguageToken")]
-pub enum Expr {
-    BinOp {
-        lhs: AtomExpr,
-        op: BinOpToken,
-        rhs: AtomExpr,
+pub enum UnOp {
+    Call {
+        target: Box<Expr>,
+        args: Parenthesized<SeparatedOptTrailing<Expr, CommaToken>>,
         span: Span,
     },
     Atom(AtomExpr),
 }
 
+impl Parse<ExampleLanguageToken> for UnOp {
+    fn parse<I>(tokenizer: &mut I) -> ParseResult<Self>
+        where Self: Sized, I: TokenIterator<ExampleLanguageToken>
+    {
+        let start = tokenizer.start();
+        let mut target = UnOp::Atom(AtomExpr::parse(tokenizer)?);
+        loop {
+            if <Parenthesized<SeparatedOptTrailing<Expr, CommaToken>>>::peek(tokenizer) {
+                target = UnOp::Call {
+                    target: Box::from(Expr::UnOp(target)),
+                    args: <Parenthesized<SeparatedOptTrailing<Expr, CommaToken>>>::parse(tokenizer)?,
+                    span: tokenizer.span_from(start),
+                };
+            }
+            else {
+                break;
+            }
+        }
+        Ok(target)
+    }
+    fn peek<I>(tokenizer: &I) -> bool
+        where Self: Sized, I: TokenIterator<ExampleLanguageToken>
+    {
+        AtomExpr::peek(tokenizer)
+    }
+}
+
 #[derive(Debug, NodeKind)]
+#[parse(expected = "expression", token_type = "ExampleLanguageToken")]
+pub enum Expr {
+    BinOp {
+        lhs: Box<Expr>,
+        op: BinOp,
+        rhs: Box<Expr>,
+        span: Span,
+    },
+    UnOp(UnOp),
+}
+
+impl Expr {
+    fn parse_with_precedence<I>(tokenizer: &mut I, mut lhs: Expr, current_prec: usize) -> ParseResult<Self>
+        where I: TokenIterator<ExampleLanguageToken>
+    {
+        // Keep parsing binops with precedence
+        loop {
+            // This also checks that there's a binop coming up
+            let Some(upcoming_prec) = BinOp::peek_precedence(tokenizer) else { break };
+            if upcoming_prec < current_prec {
+                break;
+            }
+
+            // Consume the upcoming operator
+            // This should really not be capable of failing since 
+            // BinOp::peek_precedence() returned Some
+            let op = BinOp::parse(tokenizer)?;
+
+            // Parse RHS
+            let mut rhs = Expr::UnOp(UnOp::parse(tokenizer)?);
+
+            // What does this mean????
+            if let Some(true) = BinOp::peek_rtl(tokenizer) {
+                rhs = Self::parse_with_precedence(tokenizer, rhs, current_prec)?;
+            }
+
+            if let Some(upcoming_2_prec) = BinOp::peek_precedence(tokenizer) {
+                if upcoming_prec < upcoming_2_prec {
+                    rhs = Self::parse_with_precedence(tokenizer, rhs, upcoming_2_prec)?;
+                }
+            }
+
+            lhs = Expr::BinOp {
+                span: tokenizer.span_from(lhs.span().start()),
+                lhs: Box::from(lhs),
+                op,
+                rhs: Box::from(rhs),
+            }
+        }
+        Ok(lhs)
+    }
+}
+
+impl Parse<ExampleLanguageToken> for Expr {
+    fn parse<I>(tokenizer: &mut I) -> ParseResult<Self>
+        where Self: Sized, I: TokenIterator<ExampleLanguageToken>
+    {
+        // If LHS parsing fails it's probably worthless to try to parse the 
+        // binop further
+        let lhs = Expr::UnOp(UnOp::parse(tokenizer)?);
+        if BinOp::peek(tokenizer) {
+            Expr::parse_with_precedence(tokenizer, lhs, 0)
+        }
+        else {
+            Ok(lhs)
+        }
+    }
+    fn peek<I>(tokenizer: &I) -> bool
+        where Self: Sized, I: TokenIterator<ExampleLanguageToken>
+    {
+        AtomExpr::peek(tokenizer)
+    }
+}
+
+#[derive(Debug, NodeKind, Parse)]
 #[parse(token_type = "ExampleLanguageToken")]
 pub struct ExprList {
-    exprs: ZeroOrMore<Expr>,
+    exprs: SeparatedOptTrailing<Expr, SemicolonToken>,
     span: Span,
 }
 
@@ -147,7 +298,10 @@ impl DebugEq for Token<ExampleLanguageToken> {
                 (ExampleLanguageToken::Number(a), ExampleLanguageToken::Number(b)) => a == b,
                 (ExampleLanguageToken::Ident(a), ExampleLanguageToken::Ident(b)) => a == b,
                 (ExampleLanguageToken::String(a), ExampleLanguageToken::String(b)) => a == b,
-                (ExampleLanguageToken::BinOp(a), ExampleLanguageToken::BinOp(b)) => a == b,
+                (ExampleLanguageToken::Plus, ExampleLanguageToken::Plus) => true,
+                (ExampleLanguageToken::Minus, ExampleLanguageToken::Minus) => true,
+                (ExampleLanguageToken::Assign, ExampleLanguageToken::Assign) => true,
+                (ExampleLanguageToken::Eq, ExampleLanguageToken::Eq) => true,
                 (ExampleLanguageToken::Parenthesis(a), ExampleLanguageToken::Parenthesis(b)) => {
                     a.into_items().debug_eq(b.into_items())?;
                     true
@@ -222,12 +376,12 @@ fn parse_source_from_memory() {
     let result = tokens.debug_eq(
         vec![
             ExampleLanguageToken::Ident("num".into()),
-            ExampleLanguageToken::BinOp(BinOp::Assign),
+            ExampleLanguageToken::Assign,
             ExampleLanguageToken::Number(2.0),
             ExampleLanguageToken::Ident("print".into()),
             ExampleLanguageToken::Parenthesis(TokenTree::new(vec![
                 ExampleLanguageToken::Ident("num".into()),
-                ExampleLanguageToken::BinOp(BinOp::Plus),
+                ExampleLanguageToken::Plus,
                 ExampleLanguageToken::Number(4.0),
             ].into_iter().map(|t| Token::new(t, src.span(0..0))).collect(), (Some(")"), src.span(0..0)))),
             ExampleLanguageToken::Ident("print".into()),

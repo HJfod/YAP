@@ -47,7 +47,7 @@ use syn::spanned::Spanned;
 #[darling(attributes(parse), supports(any))]
 struct ParseReceiver {
     ident: syn::Ident,
-    generics: syn::Generics,
+    // generics: syn::Generics,
     data: ast::Data<ParseVariant, ParseField>,
     token_type: String,
     expected: Option<String>,
@@ -201,8 +201,7 @@ fn generate_field_parse_code(span: Span, ident: TokenStream2, fields: ast::Field
     }
 }
 
-#[proc_macro_derive(NodeKind, attributes(parse))]
-pub fn derive_node_kind(input: TokenStream) -> TokenStream {
+fn derive_node_kind_or_parse(input: TokenStream, node_kind_or_parse: bool) -> TokenStream {
     let item = match ParseReceiver::from_derive_input(&syn::parse(input).expect("Couldn't parse item")) {
         Ok(v) => v,
         Err(e) => { return e.write_errors().into(); }
@@ -260,37 +259,53 @@ pub fn derive_node_kind(input: TokenStream) -> TokenStream {
     let peek_impl = gen.peek_impl;
     let children_match_impl = gen.children_match_impl;
     let span_match_impl = gen.span_match_impl;
-    quote! {
-        impl prolangine::parse::node::Parse<#token_type> for #for_item {
-            fn parse<I>(tokenizer: &mut I) -> prolangine::parse::token::ParseResult<Self>
-                where
-                    Self: Sized,
-                    I: prolangine::parse::token::TokenIterator<#token_type>
-            {
-                #parse_impl
-            }
-            fn peek<I>(tokenizer: &I) -> bool
-                where
-                    Self: Sized,
-                    I: prolangine::parse::token::TokenIterator<#token_type>
-            {
-                #peek_impl
-            }
-        }
 
-        impl prolangine::parse::node::NodeKind for #for_item {
-            fn children(&self) -> Vec<&dyn prolangine::parse::node::NodeKind> {
-                match self {
-                    #children_match_impl
+    if node_kind_or_parse {
+        quote! {
+            impl prolangine::parse::node::NodeKind for #for_item {
+                fn children(&self) -> Vec<&dyn prolangine::parse::node::NodeKind> {
+                    match self {
+                        #children_match_impl
+                    }
+                }
+                fn span(&self) -> prolangine::src::Span {
+                    match self {
+                        #span_match_impl
+                    }
                 }
             }
-            fn span(&self) -> prolangine::src::Span {
-                match self {
-                    #span_match_impl
+        }
+    }
+    else {
+        quote! {
+            impl prolangine::parse::node::Parse<#token_type> for #for_item {
+                fn parse<I>(tokenizer: &mut I) -> prolangine::parse::token::ParseResult<Self>
+                    where
+                        Self: Sized,
+                        I: prolangine::parse::token::TokenIterator<#token_type>
+                {
+                    #parse_impl
+                }
+                fn peek<I>(tokenizer: &I) -> bool
+                    where
+                        Self: Sized,
+                        I: prolangine::parse::token::TokenIterator<#token_type>
+                {
+                    #peek_impl
                 }
             }
         }
     }.into()
+}
+
+#[proc_macro_derive(NodeKind, attributes(parse))]
+pub fn derive_node_kind(input: TokenStream) -> TokenStream {
+    derive_node_kind_or_parse(input, true)
+}
+
+#[proc_macro_derive(Parse, attributes(parse))]
+pub fn derive_parse_kind(input: TokenStream) -> TokenStream {
+    derive_node_kind_or_parse(input, false)
 }
 
 #[derive(FromMeta)]
@@ -430,6 +445,15 @@ pub fn create_token_nodes(args: TokenStream, input: TokenStream) -> TokenStream 
                 span: prolangine::src::Span,
             }
 
+            impl #generics_def prolangine::parse::node::NodeKind for #node_name #generics_use {
+                fn children(&self) -> Vec<&dyn prolangine::parse::node::NodeKind> {
+                    #children_impl
+                }
+                fn span(&self) -> Span {
+                    self.span.clone()
+                }
+            }
+
             impl #generics_parse_def prolangine::parse::node::Parse<#token_name> for #node_name #generics_use {
                 fn parse<I>(tokenizer: &mut I) -> prolangine::parse::token::ParseResult<Self>
                     where
@@ -463,15 +487,6 @@ pub fn create_token_nodes(args: TokenStream, input: TokenStream) -> TokenStream 
                     else {
                         false
                     }
-                }
-            }
-
-            impl #generics_def prolangine::parse::node::NodeKind for #node_name #generics_use {
-                fn children(&self) -> Vec<&dyn prolangine::parse::node::NodeKind> {
-                    #children_impl
-                }
-                fn span(&self) -> Span {
-                    self.span.clone()
                 }
             }
         });
