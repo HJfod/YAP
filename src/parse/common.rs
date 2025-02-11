@@ -5,7 +5,7 @@ use std::marker::PhantomData;
 use crate::src::{Span, SrcCursor};
 use unicode_xid::UnicodeXID;
 
-use super::{node::{NodeKind, Parse}, token::{Error, ParseResult, TokenIterator, TokenKind, TokenTree}};
+use super::{node::{NodeKind, Parse}, token::{Error, Fabricate, ParseResult, TokenIterator, TokenKind, TokenTree}};
 
 /// Skip C-like comments (`// ...` line comments and `/* ... */` block comments)
 /// in a source stream, as well as skipping whitespace
@@ -180,40 +180,21 @@ pub fn parse_delimited<T: TokenKind>(
             }
 
             // Check for EOF (unclosed delimited sequence)
-            match T::next(cursor) {
-                Ok(token) => {
-                    if token.is_eof() {
-                        errors.push(Error::expected(close, &token, token.span()));
-                        break;
-                    }
-                    // Otherwise push this token and keep looking
-                    tokens.push(token);
-                }
-                Err(e) => errors.extend(e),
+            let token = T::next(cursor).append_and_get(&mut errors);
+            if token.is_eof() {
+                errors.push(Error::expected(close, &token, token.span()));
+                break;
             }
+            // Otherwise push this token and keep looking
+            tokens.push(token);
         }
-        if !errors.is_empty() {
-            return Some(Err(errors));
-        }
-        Some(Ok(TokenTree::new(tokens, (Some(&format!("'{}'", close)), cursor.span_from(eof_start)))))
+        Some(ParseResult::new(
+            TokenTree::new(tokens, (Some(&format!("'{}'", close)), cursor.span_from(eof_start))),
+            errors
+        ))
     }
     else {
         None
-    }
-}
-
-pub fn try_parse_discard<T: TokenKind, N: Parse<T>>(tokenizer: &mut impl TokenIterator<T>, errors: &mut Vec<Error>) {
-    match N::parse(tokenizer) {
-        Ok(_) => {}
-        Err(e) => errors.extend(e),
-    }
-}
-pub fn try_parse_into_list<T: TokenKind, N: Parse<T>>(
-    tokenizer: &mut impl TokenIterator<T>, list: &mut Vec<N>, errors: &mut Vec<Error>
-) {
-    match N::parse(tokenizer) {
-        Ok(n) => if errors.is_empty() { list.push(n) }
-        Err(e) => errors.extend(e),
     }
 }
 
@@ -223,26 +204,9 @@ pub enum Maybe<N: NodeKind> {
     None(Span),
 }
 
-impl<T: TokenKind, N: NodeKind + Parse<T>> Parse<T> for Maybe<N> {
-    fn parse<I>(tokenizer: &mut I) -> ParseResult<Self>
-        where
-            Self: Sized,
-            I: TokenIterator<T>
-    {
-        let start = tokenizer.start();
-        if N::peek(tokenizer) {
-            Ok(Self::Some(N::parse(tokenizer)?))
-        }
-        else {
-            Ok(Self::None(tokenizer.span_from(start)))
-        }
-    }
-    fn peek<I>(tokenizer: &I) -> bool
-        where
-            Self: Sized,
-            I: TokenIterator<T>
-    {
-        N::peek(tokenizer)
+impl<N: NodeKind + Fabricate> Fabricate for Maybe<N> {
+    fn fabricate(span: Span) -> Self {
+        Self::None(span)
     }
 }
 impl<N: NodeKind> NodeKind for Maybe<N> {
@@ -259,6 +223,28 @@ impl<N: NodeKind> NodeKind for Maybe<N> {
         }
     }
 }
+impl<T: TokenKind, N: NodeKind + Parse<T>> Parse<T> for Maybe<N> {
+    fn parse<I>(tokenizer: &mut I) -> ParseResult<Self>
+        where
+            Self: Sized,
+            I: TokenIterator<T>
+    {
+        let start = tokenizer.start();
+        if N::peek(tokenizer) {
+            N::parse(tokenizer).map(Self::Some)
+        }
+        else {
+            ParseResult::ok(Self::None(tokenizer.span_from(start)))
+        }
+    }
+    fn peek<I>(tokenizer: &I) -> bool
+        where
+            Self: Sized,
+            I: TokenIterator<T>
+    {
+        N::peek(tokenizer)
+    }
+}
 
 /// Zero or more of specific type of node. Wants to parse the entire source 
 /// stream!
@@ -268,6 +254,14 @@ pub struct ZeroOrMore<N: NodeKind> {
     span: Span,
 }
 
+impl<N: NodeKind + Fabricate> Fabricate for ZeroOrMore<N> {
+    fn fabricate(span: Span) -> Self {
+        Self {
+            items: vec![],
+            span,
+        }
+    }
+}
 impl<N: NodeKind> NodeKind for ZeroOrMore<N> {
     fn children(&self) -> Vec<&dyn NodeKind> {
         self.items.iter().map(|n| n as &dyn NodeKind).collect()
@@ -285,16 +279,16 @@ impl<T: TokenKind, N: NodeKind + Parse<T>> Parse<T> for ZeroOrMore<N> {
         let start = tokenizer.start();
         let mut items = vec![];
         let mut errors = vec![];
-        while !tokenizer.is_eof() {
-            try_parse_into_list(tokenizer, &mut items, &mut errors);
+        while !tokenizer.peek().is_eof() {
+            items.push(N::parse(tokenizer).append_and_get(&mut errors));
         }
-        if !errors.is_empty() {
-            return Err(errors);
-        }
-        Ok(Self {
-            items,
-            span: tokenizer.span_from(start),
-        })
+        ParseResult::new(
+            Self {
+                items,
+                span: tokenizer.span_from(start),
+            },
+            errors
+        )
     }
     fn peek<I>(tokenizer: &I) -> bool
         where
@@ -315,6 +309,15 @@ pub struct Separated<N: NodeKind, S: NodeKind> {
     _phantom: PhantomData<S>,
 }
 
+impl<N: NodeKind + Fabricate, S: NodeKind> Fabricate for Separated<N, S> {
+    fn fabricate(span: Span) -> Self {
+        Self {
+            items: vec![],
+            span,
+            _phantom: PhantomData
+        }
+    }
+}
 impl<N: NodeKind, S: NodeKind> NodeKind for Separated<N, S> {
     fn children(&self) -> Vec<&dyn NodeKind> {
         self.items.iter().map(|n| n as &dyn NodeKind).collect()
@@ -337,22 +340,22 @@ impl<
         if N::peek(tokenizer) {
             let mut items = vec![];
             let mut errors = vec![];
-            try_parse_into_list(tokenizer, &mut items, &mut errors);
-            while !tokenizer.is_eof() {
-                try_parse_discard::<T, S>(tokenizer, &mut errors);
-                try_parse_into_list(tokenizer, &mut items, &mut errors);
+            items.push(N::parse(tokenizer).append_and_get(&mut errors));
+            while !tokenizer.peek().is_eof() {
+                S::parse(tokenizer).append_and_get(&mut errors);
+                items.push(N::parse(tokenizer).append_and_get(&mut errors));
             }
-            if !errors.is_empty() {
-                return Err(errors);
-            }
-            Ok(Self {
-                items,
-                span: tokenizer.span_from(start),
-                _phantom: PhantomData,
-            })
+            ParseResult::new(
+                Self {
+                    items,
+                    span: tokenizer.span_from(start),
+                    _phantom: PhantomData,
+                },
+                errors
+            )
         }
         else {
-            Ok(Self {
+            ParseResult::ok(Self {
                 items: vec![],
                 span: tokenizer.src().span(start..start),
                 _phantom: PhantomData,
@@ -377,6 +380,15 @@ pub struct SeparatedOptTrailing<N: NodeKind, S: NodeKind> {
     _phantom: PhantomData<S>,
 }
 
+impl<N: NodeKind + Fabricate, S: NodeKind> Fabricate for SeparatedOptTrailing<N, S> {
+    fn fabricate(span: Span) -> Self {
+        Self {
+            items: vec![],
+            span,
+            _phantom: PhantomData
+        }
+    }
+}
 impl<N: NodeKind, S: NodeKind> NodeKind for SeparatedOptTrailing<N, S> {
     fn children(&self) -> Vec<&dyn NodeKind> {
         self.items.iter().map(|n| n as &dyn NodeKind).collect()
@@ -399,24 +411,24 @@ impl<
         if N::peek(tokenizer) {
             let mut items = vec![];
             let mut errors = vec![];
-            try_parse_into_list(tokenizer, &mut items, &mut errors);
-            while !tokenizer.is_eof() {
-                try_parse_discard::<T, S>(tokenizer, &mut errors);
-                if !tokenizer.is_eof() {
-                    try_parse_into_list(tokenizer, &mut items, &mut errors);
+            items.push(N::parse(tokenizer).append_and_get(&mut errors));
+            while !tokenizer.peek().is_eof() {
+                S::parse(tokenizer).append_and_get(&mut errors);
+                if !tokenizer.peek().is_eof() {
+                    items.push(N::parse(tokenizer).append_and_get(&mut errors));
                 }
             }
-            if !errors.is_empty() {
-                return Err(errors);
-            }
-            Ok(Self {
-                items,
-                span: tokenizer.span_from(start),
-                _phantom: PhantomData,
-            })
+            ParseResult::new(
+                Self {
+                    items,
+                    span: tokenizer.span_from(start),
+                    _phantom: PhantomData,
+                },
+                errors
+            )
         }
         else {
-            Ok(Self {
+            ParseResult::ok(Self {
                 items: vec![],
                 span: tokenizer.src().span(start..start),
                 _phantom: PhantomData,

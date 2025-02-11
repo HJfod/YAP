@@ -82,7 +82,8 @@ impl Span {
         }
     }
     pub fn underlined(&self, codebase: &Codebase, style: Underline) -> String {
-        let data = self.fetch_data(codebase);
+        let src = codebase.get_src(self.0);
+        let data = src.data();
         // Get the starting and ending linecols as 0-based indices
         let sub_tuple = |a: (usize, usize)| (a.0 - 1, a.1 - 1);
         let lookup = LineColLookup::new(data);
@@ -133,7 +134,7 @@ impl Span {
             "{}{}{}\n{}",
             " ".repeat(padding),
             "--> ".black(),
-            data.black(),
+            src.name().black(),
             underlined
         )
     }

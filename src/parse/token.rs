@@ -1,3 +1,4 @@
+use crate::src::{Codebase, Underline};
 use crate::src::{Span, Src, SrcCursor, SrcID};
 use std::fmt::Debug;
 use std::fmt::Display;
@@ -22,9 +23,59 @@ impl Error {
     pub fn expected<W: Display, G: Display>(what: W, got: G, span: Span) -> Self {
         Self { message: format!("expected {what}, got {got}"), span }
     }
+    pub fn display(&self, codebase: &Codebase) -> String {
+        format!("{}{}", self.span.underlined(codebase, Underline::Squiggle), self.message)
+    }
 }
 
-pub type ParseResult<T> = Result<T, Vec<Error>>;
+/// For intellisense, it is important to get some sort of AST out (even if it 
+/// has syntax errors in it) to be able to do type analysis for auto-complete, 
+/// suggestions, etc. For this reason this has to return both the T and the 
+/// errors and not be an enum of one or the other
+pub struct ParseResult<T>(T, Vec<Error>);
+
+impl<T> ParseResult<T> {
+    pub fn ok(value: T) -> Self {
+        Self(value, vec![])
+    }
+    pub fn new(value: T, errors: Vec<Error>) -> Self {
+        Self(value, errors)
+    }
+    pub fn parsed(&self) -> &T {
+        &self.0
+    }
+    pub fn errors(&self) -> &[Error] {
+        &self.1
+    }
+    /// Panics on error. This is intended for tests; **always** use 
+    /// `append_and_get` in consumer code!
+    pub fn assert_is_errorless(self) -> T {
+        if !self.1.is_empty() {
+            panic!("assert_is_errorless failed: contained {} errors", self.1.len());
+        }
+        self.0
+    }
+    pub fn append_and_get(self, append_to: &mut impl Extend<Error>) -> T {
+        append_to.extend(self.1);
+        self.0
+    }
+    pub fn map<T2, M: FnOnce(T) -> T2>(self, mapper: M) -> ParseResult<T2> {
+        ParseResult(mapper(self.0), self.1)
+    }
+}
+
+/// Allow destructuring `ParseResult` without exposing its fields
+impl<T> From<ParseResult<T>> for (T, Vec<Error>) {
+    fn from(value: ParseResult<T>) -> Self {
+        (value.0, value.1)
+    }
+}
+
+pub trait Fabricate {
+    /// Produce a basic, most likely invalid instance of this token
+    /// Needed so some sort of AST can be constructed when the input is invalid
+    fn fabricate(span: Span) -> Self;
+}
 
 /// The main trait for introducing a custom syntax for a language. The
 /// language's token kind should implement this trait.
@@ -36,7 +87,7 @@ pub type ParseResult<T> = Result<T, Vec<Error>>;
 /// token type must be able to encode an optional name for the EOF (such as
 /// "closing brace"), since EOF does not necessarily mean end-of-file but can
 /// also mean end-of-subtree
-pub trait TokenKind: Debug + Sized + DisplayName {
+pub trait TokenKind: Debug + Sized + DisplayName + Fabricate {
     /// Get the next token in the source iterator. This method is **not required**
     /// to run [`TokenKind::skip_to_next`]; it may assume that the next token
     /// starts where the cursor is currently pointing at
@@ -115,6 +166,33 @@ impl<T: TokenKind> Token<T> {
     }
 }
 
+impl<T: TokenKind> Fabricate for Token<T> {
+    fn fabricate(span: Span) -> Self {
+        Self::new(T::fabricate(span.clone()), span)
+    }
+}
+
+impl Fabricate for () {
+    fn fabricate(_span: Span) -> Self {
+        Self::default()
+    }
+}
+impl Fabricate for i64 {
+    fn fabricate(_span: Span) -> Self {
+        Self::default()
+    }
+}
+impl Fabricate for f64 {
+    fn fabricate(_span: Span) -> Self {
+        Self::default()
+    }
+}
+impl Fabricate for String {
+    fn fabricate(_span: Span) -> Self {
+        Self::default()
+    }
+}
+
 impl<T: TokenKind> Display for Token<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self.kind {
@@ -132,20 +210,15 @@ pub trait TokenIterator<T: TokenKind> {
     /// Get the next `Token` in the stream
     fn next(&mut self) -> ParseResult<Token<T>>;
     /// Get the next upcoming `Token` in the stream without consuming it
-    /// Returns `None` if token parsing failed; EOF is a type of token!
-    fn peek(&self) -> Option<&Token<T>>;
+    fn peek(&self) -> &Token<T>;
     /// Get the start position of the next `Token`
     fn start(&self) -> usize;
     /// Get the span from `start` to the end of the last token returned
     fn span_from(&self, start: usize) -> Span;
     /// Returns the name of the EOF token
     fn eof_name(&self) -> String;
-
+    /// Get the source file of the iterator
     fn src(&self) -> SrcID;
-
-    fn is_eof(&self) -> bool {
-        self.peek().map(|token| token.is_eof()).unwrap_or(false)
-    }
 }
 
 /// Turns an unparsed source file into tokens
@@ -172,16 +245,14 @@ impl<T: TokenKind> TokenIterator<T> for Tokenizer<'_, T> {
     fn next(&mut self) -> ParseResult<Token<T>> {
         // We want to preserve whatever last_end was previously if parsing the 
         // next token fails
-        if let Ok(ref v) = self.next {
-            self.last_end = v.span().end();
-        }
+        self.last_end = self.next.parsed().span().end();
         std::mem::replace(&mut self.next, Self::fetch_next(&mut self.cursor))
     }
-    fn peek(&self) -> Option<&Token<T>> {
-        self.next.as_ref().ok()
+    fn peek(&self) -> &Token<T> {
+        self.next.parsed()
     }
     fn start(&self) -> usize {
-        self.next.as_ref().map(|n| n.span().start()).unwrap_or(self.last_end)
+        self.next.parsed().span().start()
     }
     fn span_from(&self, start: usize) -> Span {
        self.cursor.src().span(start..self.last_end)
@@ -229,13 +300,13 @@ impl<T: TokenKind> TokenTree<T> {
 impl<T: TokenKind> TokenIterator<T> for TokenTree<T> {
     fn next(&mut self) -> ParseResult<Token<T>> {
         self.last_end = self.next.span().end();
-        Ok(std::mem::replace(
+        ParseResult::ok(std::mem::replace(
             &mut self.next,
             Self::fetch_next(&mut self.tokens, (self.eof.0.as_deref(), self.eof.1.clone()))
         ))
     }
-    fn peek(&self) -> Option<&Token<T>> {
-        Some(&self.next)
+    fn peek(&self) -> &Token<T> {
+        &self.next
     }
     fn start(&self) -> usize {
         self.next.span().start()

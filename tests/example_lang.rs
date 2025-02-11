@@ -11,7 +11,7 @@ use prolangine::{
             parse_matching,
             ParsedString,
             SeparatedOptTrailing,
-        }, node::{NodeKind, Parse}, token::{DisplayName, Error, ParseResult, ParsedTokenKind, Token, TokenIterator, TokenKind, TokenTree}
+        }, node::{NodeKind, Parse}, token::{DisplayName, Error, Fabricate, ParseResult, ParsedTokenKind, Token, TokenIterator, TokenKind, TokenTree}
     },
     src::{Codebase, Span, SrcCursor}
 };
@@ -44,75 +44,96 @@ pub enum ExampleLanguageToken {
 
     #[token(node = "Parenthesized<T>")]
     Parenthesis(TokenTree<ExampleLanguageToken>),
+
+    /// Note: convertible to any other token type
+    #[token(display_name = "<invalid token>")]
+    Invalid,
 }
 
+impl Fabricate for ExampleLanguageToken {
+    fn fabricate(_span: Span) -> Self {
+        Self::Invalid
+    }
+}
 impl TokenKind for ExampleLanguageToken {
     fn next(cursor: &mut SrcCursor) -> ParseResult<Token<ExampleLanguageToken>> {
         let start = cursor.pos();
 
         // Check for EOF
         if cursor.peek().is_none() {
-            return Ok(Token::new_eof(None, cursor.span_from(start)));
+            return ParseResult::ok(Token::new_eof(None, cursor.span_from(start)));
         }
 
         // Identifiers & keywords
         if let Some(ident) = parse_c_like_word(cursor) {
-            return Ok(Token::new(Self::Ident(ident.into()), cursor.span_from(start)));
+            return ParseResult::ok(Token::new(Self::Ident(ident.into()), cursor.span_from(start)));
         }
 
         // Numbers
         if let Some((num, _)) = parse_c_like_num(cursor) {
-            return match num.parse() {
-                Ok(n) => Ok(Token::new(Self::Number(n), cursor.span_from(start))),
-                Err(e) => Err(vec![Error::new(format!("invalid number {num} ({e})"), cursor.span_from(start))]),
-            }
+            let mut errors = vec![];
+            let res = match num.parse() {
+                Ok(n) => n,
+                Err(e) => {
+                    errors.push(Error::new(format!("invalid number {num} ({e})"), cursor.span_from(start)));
+                    0.0
+                }
+            };
+            return ParseResult::new(Token::new(Self::Number(res), cursor.span_from(start)), errors);
         }
 
         // String literal
         if let Some(str) = parse_c_like_string(cursor) {
-            return match str {
-                ParsedString::Parsed(str) => Ok(Token::new(Self::String(str), cursor.span_from(start))),
+            let mut errors = vec![];
+            let res = match str {
+                ParsedString::Parsed(str) => str,
                 ParsedString::InvalidEscapeSequences(seqs) => {
-                    // TODO: tokens can't contain multiple errors, so either
-                    // a) Make that possible
-                    // b) Make InvalidString its own token type and carry the information along
-                    //    (bad because then `StringToken::parse()` doesn't always work)
-                    // c) Include the errors in the String token
-                    // d) Just deal with this
-                    let (c, span) = seqs.into_iter().next().unwrap();
-                    Err(vec![Error::new(format!("invalid escape sequence '\\{c}'"), span)])
+                    for seq in seqs {
+                        errors.push(Error::new(format!("invalid escape sequence '\\{}'", seq.0), seq.1));
+                    }
+                    String::new()
                 }
-                ParsedString::Unterminated(span) => Err(vec![Error::new("unterminated string literal", span)]),
-            }
+                ParsedString::Unterminated(span) => {
+                    errors.push(Error::new("unterminated string literal", span));
+                    String::new()
+                }
+            };
+            return ParseResult::new(Token::new(Self::String(res), cursor.span_from(start)), errors);
         }
 
         if parse_exact(";", cursor).is_some() {
-            return Ok(Token::new(Self::Semicolon, cursor.span_from(start)));
+            return ParseResult::ok(Token::new(Self::Semicolon, cursor.span_from(start)));
         }
         if parse_exact(",", cursor).is_some() {
-            return Ok(Token::new(Self::Comma, cursor.span_from(start)));
+            return ParseResult::ok(Token::new(Self::Comma, cursor.span_from(start)));
         }
 
         // Operators
         if let Some(op) = parse_matching(is_op_char, cursor) {
-            return match op {
-                "==" => Ok(Token::new(Self::Eq, cursor.span_from(start))),
-                "+" => Ok(Token::new(Self::Plus, cursor.span_from(start))),
-                "-" => Ok(Token::new(Self::Minus, cursor.span_from(start))),
-                "=" => Ok(Token::new(Self::Assign, cursor.span_from(start))),
-                o => Err(vec![Error::new(format!("invalid operator '{o}'"), cursor.span_from(start))]),
-            }
+            let mut errors = vec![];
+            let res = match op {
+                "==" => Self::Eq,
+                "+" => Self::Plus,
+                "-" => Self::Minus,
+                "=" => Self::Assign,
+                o => {
+                    errors.push(Error::new(format!("invalid operator '{o}'"), cursor.span_from(start)));
+                    Self::Invalid
+                }
+            };
+            return ParseResult::new(Token::new(res, cursor.span_from(start)), errors);
         }
 
         // Parenthesis
         if let Some(tree) = parse_delimited("(", ")", cursor) {
-            return Ok(Token::new(Self::Parenthesis(tree?), cursor.span_from(start)));
+            return tree.map(|tree| Token::new(Self::Parenthesis(tree), cursor.span_from(start)));
         }
 
-        Err(vec![Error::new(
-            format!("invalid character '{}'", cursor.next().unwrap()),
-            cursor.span_from(start)
-        )])
+        let next = cursor.next().unwrap();
+        ParseResult::new(
+            Token::new(ExampleLanguageToken::Invalid, cursor.span_from(start)),
+            vec![Error::new(format!("invalid character '{}'", next), cursor.span_from(start))]
+        )
     }
 }
 
@@ -125,9 +146,15 @@ pub enum BinOp {
     Eq(EqToken),
 }
 
+impl Fabricate for BinOp {
+    fn fabricate(span: Span) -> Self {
+        Self::Plus(PlusToken::fabricate(span))
+    }
+}
+
 impl BinOp {
     pub fn peek_precedence<I: TokenIterator<ExampleLanguageToken>>(tokenizer: &I) -> Option<usize> {
-        match tokenizer.peek().and_then(|token| token.as_token()) {
+        match tokenizer.peek().as_token() {
             Some(token) => {
                 match token {
                     ExampleLanguageToken::Plus => Some(2),
@@ -141,7 +168,7 @@ impl BinOp {
         }
     }
     pub fn peek_rtl<I: TokenIterator<ExampleLanguageToken>>(tokenizer: &I) -> Option<bool> {
-        match tokenizer.peek().and_then(|token| token.as_token()) {
+        match tokenizer.peek().as_token() {
             Some(token) => {
                 match token {
                     ExampleLanguageToken::Plus => Some(false),
@@ -165,6 +192,13 @@ pub enum AtomExpr {
     Ident(IdentToken),
 }
 
+// todo: derive impl
+impl Fabricate for AtomExpr {
+    fn fabricate(span: Span) -> Self {
+        Self::Ident(IdentToken::fabricate(span))
+    }
+}
+
 #[derive(Debug, NodeKind)]
 #[parse(expected = "expression", token_type = "ExampleLanguageToken")]
 pub enum UnOp {
@@ -176,17 +210,22 @@ pub enum UnOp {
     Atom(AtomExpr),
 }
 
+impl Fabricate for UnOp {
+    fn fabricate(span: Span) -> Self {
+        Self::Atom(AtomExpr::fabricate(span))
+    }
+}
 impl Parse<ExampleLanguageToken> for UnOp {
     fn parse<I>(tokenizer: &mut I) -> ParseResult<Self>
         where Self: Sized, I: TokenIterator<ExampleLanguageToken>
     {
         let start = tokenizer.start();
-        let mut target = UnOp::Atom(AtomExpr::parse(tokenizer)?);
+        let (mut target, mut errors) = AtomExpr::parse(tokenizer).map(UnOp::Atom).into();
         loop {
             if <Parenthesized<SeparatedOptTrailing<Expr, CommaToken>>>::peek(tokenizer) {
                 target = UnOp::Call {
                     target: Box::from(Expr::UnOp(target)),
-                    args: <Parenthesized<SeparatedOptTrailing<Expr, CommaToken>>>::parse(tokenizer)?,
+                    args: <Parenthesized<SeparatedOptTrailing<Expr, CommaToken>>>::parse(tokenizer).append_and_get(&mut errors),
                     span: tokenizer.span_from(start),
                 };
             }
@@ -194,7 +233,7 @@ impl Parse<ExampleLanguageToken> for UnOp {
                 break;
             }
         }
-        Ok(target)
+        ParseResult::new(target, errors)
     }
     fn peek<I>(tokenizer: &I) -> bool
         where Self: Sized, I: TokenIterator<ExampleLanguageToken>
@@ -215,10 +254,17 @@ pub enum Expr {
     UnOp(UnOp),
 }
 
+impl Fabricate for Expr {
+    fn fabricate(span: Span) -> Self {
+        Self::UnOp(UnOp::fabricate(span))
+    }
+}
 impl Expr {
-    fn parse_with_precedence<I>(tokenizer: &mut I, mut lhs: Expr, current_prec: usize) -> ParseResult<Self>
+    fn parse_with_precedence<I>(tokenizer: &mut I, mut lhs: Self, current_prec: usize) -> ParseResult<Self>
         where I: TokenIterator<ExampleLanguageToken>
     {
+        let mut errors = vec![];
+
         // Keep parsing binops with precedence
         loop {
             // This also checks that there's a binop coming up
@@ -230,19 +276,19 @@ impl Expr {
             // Consume the upcoming operator
             // This should really not be capable of failing since 
             // BinOp::peek_precedence() returned Some
-            let op = BinOp::parse(tokenizer)?;
+            let op = BinOp::parse(tokenizer).append_and_get(&mut errors);
 
             // Parse RHS
-            let mut rhs = Expr::UnOp(UnOp::parse(tokenizer)?);
+            let mut rhs = UnOp::parse(tokenizer).map(Expr::UnOp).append_and_get(&mut errors);
 
             // What does this mean????
             if let Some(true) = BinOp::peek_rtl(tokenizer) {
-                rhs = Self::parse_with_precedence(tokenizer, rhs, current_prec)?;
+                rhs = Self::parse_with_precedence(tokenizer, rhs, current_prec).append_and_get(&mut errors);
             }
 
             if let Some(upcoming_2_prec) = BinOp::peek_precedence(tokenizer) {
                 if upcoming_prec < upcoming_2_prec {
-                    rhs = Self::parse_with_precedence(tokenizer, rhs, upcoming_2_prec)?;
+                    rhs = Self::parse_with_precedence(tokenizer, rhs, upcoming_2_prec).append_and_get(&mut errors);
                 }
             }
 
@@ -253,7 +299,7 @@ impl Expr {
                 rhs: Box::from(rhs),
             }
         }
-        Ok(lhs)
+        ParseResult::new(lhs, errors)
     }
 }
 
@@ -261,14 +307,14 @@ impl Parse<ExampleLanguageToken> for Expr {
     fn parse<I>(tokenizer: &mut I) -> ParseResult<Self>
         where Self: Sized, I: TokenIterator<ExampleLanguageToken>
     {
-        // If LHS parsing fails it's probably worthless to try to parse the 
-        // binop further
-        let lhs = Expr::UnOp(UnOp::parse(tokenizer)?);
+        let lhs = UnOp::parse(tokenizer).map(Expr::UnOp);
         if BinOp::peek(tokenizer) {
-            Expr::parse_with_precedence(tokenizer, lhs, 0)
+            let (lhs, mut errors) = lhs.into();
+            let res = Expr::parse_with_precedence(tokenizer, lhs, 0).append_and_get(&mut errors);
+            ParseResult::new(res, errors)
         }
         else {
-            Ok(lhs)
+            lhs
         }
     }
     fn peek<I>(tokenizer: &I) -> bool
@@ -283,6 +329,15 @@ impl Parse<ExampleLanguageToken> for Expr {
 pub struct ExprList {
     exprs: SeparatedOptTrailing<Expr, SemicolonToken>,
     span: Span,
+}
+
+impl Fabricate for ExprList {
+    fn fabricate(span: Span) -> Self {
+        Self {
+            exprs: Fabricate::fabricate(span.clone()),
+            span,
+        }
+    }
 }
 
 trait DebugEq {
@@ -338,12 +393,16 @@ impl DebugEq for Vec<Token<ExampleLanguageToken>> {
 fn parse_source_from_file() {
     let mut codebase = Codebase::new(Path::new("tests/src"));
     let src = codebase.add_src(Path::new("tests/src/test.example")).expect("Unable to read source");
-    if let Err(e) = src.tokenize::<ExampleLanguageToken>() {
-        panic!("tokenization produced errors: {e:?}");
+    let tokens = src.tokenize::<ExampleLanguageToken>();
+    if !tokens.errors().is_empty() {
+        panic!("tokenization produced errors: {:?}", tokens.errors());
     }
-    match src.parse::<ExampleLanguageToken, ExprList>() {
-        Ok(_node) => {}
-        Err(e) => panic!("parsing produced errors: {e:?}"),
+    let ast = src.parse::<ExampleLanguageToken, ExprList>();
+    if !ast.errors().is_empty() {
+        panic!(
+            "parsing produced errors:\n{}",
+            ast.errors().iter().map(|e| e.display(&codebase)).collect::<Vec<String>>().join("\n")
+        );
     }
 }
 
@@ -359,7 +418,7 @@ fn parse_source_fail() {
     let src = codebase.add_src_from_memory("test", r#"
         a = @
     "#);
-    if src.tokenize::<ExampleLanguageToken>().is_err() {
+    if !src.tokenize::<ExampleLanguageToken>().errors().is_empty() {
         panic!("tokenization produced errors");
     }
 }
@@ -372,7 +431,7 @@ fn parse_source_from_memory() {
         print(num + 4)
         print("hi everyone")
     "#);
-    let tokens = src.tokenize::<ExampleLanguageToken>().unwrap();
+    let tokens = src.tokenize::<ExampleLanguageToken>().assert_is_errorless();
     let result = tokens.debug_eq(
         vec![
             ExampleLanguageToken::Ident("num".into()),

@@ -125,7 +125,7 @@ fn generate_field_parse_code(span: Span, ident: TokenStream2, fields: ast::Field
                     #ident (a) => a.span(),
                 },
                 parse_impl: quote! {
-                    Ok(#ident(<#first_ty>::parse(tokenizer)?))
+                    <#first_ty>::parse(tokenizer).map(#ident)
                 },
                 peek_impl: quote! {
                     <#first_ty>::peek(tokenizer)
@@ -166,7 +166,7 @@ fn generate_field_parse_code(span: Span, ident: TokenStream2, fields: ast::Field
                         res.extend(#ident.children());
                     });
                     parse_fields.extend(quote! {
-                        #ident: prolangine::parse::node::Parse::parse(tokenizer)?,
+                        #ident: prolangine::parse::node::Parse::parse(tokenizer).append_and_get(&mut errors),
                     });
 
                     // todo: allow Default for non-parseable fields
@@ -191,7 +191,8 @@ fn generate_field_parse_code(span: Span, ident: TokenStream2, fields: ast::Field
                 },
                 parse_impl: quote! {
                     let start = tokenizer.start();
-                    Ok(#ident { #parse_fields })
+                    let mut errors = vec![];
+                    ParseResult::new(#ident { #parse_fields }, errors)
                 },
                 peek_impl: quote! {
                     <#first_ty>::peek(tokenizer)
@@ -239,8 +240,12 @@ fn derive_node_kind_or_parse(input: TokenStream, node_kind_or_parse: bool) -> To
             // Normal case is error on next token
             gen.parse_impl.extend(quote! {
                 {
-                    let token = tokenizer.next()?;
-                    Err(vec![prolangine::parse::token::Error::expected(#expected, &token, token.span())])
+                    let (token, mut errors) = tokenizer.next().into();
+                    errors.push(prolangine::parse::token::Error::expected(#expected, &token, token.span()));
+                    return prolangine::parse::token::ParseResult::new(
+                        prolangine::parse::token::Fabricate::fabricate(token.span()),
+                        errors
+                    );
                 }
             });
             // Last case has a dangling ||
@@ -420,12 +425,12 @@ pub fn create_token_nodes(args: TokenStream, input: TokenStream) -> TokenStream 
             <N: prolangine::parse::node::NodeKind + prolangine::parse::node::Parse<#token_name>>
         }).unwrap_or_default();
         let generics_def = use_generic_parameter.then(|| quote! {
-            <N: prolangine::parse::node::NodeKind>
+            <N: prolangine::parse::node::NodeKind + prolangine::parse::token::Fabricate>
         }).unwrap_or_default();
         let generics_use = use_generic_parameter.then(|| quote! { <N> }).unwrap_or_default();
 
         let parse_inner_impl = use_generic_parameter.then(|| quote! {
-            prolangine::parse::node::Parser::parse_fully(#destructure_names)?
+            prolangine::parse::node::Parser::parse_fully(#destructure_names).append_and_get(&mut errors)
         }).unwrap_or_else(|| quote! {
             #destructure_names
         });
@@ -445,6 +450,15 @@ pub fn create_token_nodes(args: TokenStream, input: TokenStream) -> TokenStream 
                 span: prolangine::src::Span,
             }
 
+            impl #generics_def prolangine::parse::token::Fabricate for #node_name #generics_use {
+                fn fabricate(span: prolangine::src::Span) -> Self {
+                    Self {
+                        value: prolangine::parse::token::Fabricate::fabricate(span.clone()),
+                        span
+                    }
+                }
+            }
+
             impl #generics_def prolangine::parse::node::NodeKind for #node_name #generics_use {
                 fn children(&self) -> Vec<&dyn prolangine::parse::node::NodeKind> {
                     #children_impl
@@ -460,20 +474,21 @@ pub fn create_token_nodes(args: TokenStream, input: TokenStream) -> TokenStream 
                         Self: Sized,
                         I: prolangine::parse::token::TokenIterator<#token_name>
                 {
-                    let token = tokenizer.next()?;
+                    let (token, mut errors) = tokenizer.next().into();
                     let span = token.span();
                     if let Some(#token_name::#variant_name #destructure) = token.as_token() {
                         let span = token.span();
                         let Some(#token_name::#variant_name #destructure) = token.into_token() else {
                             unreachable!();
                         };
-                        Ok(#node_name {
+                        prolangine::parse::token::ParseResult::new(#node_name {
                             value: #parse_inner_impl,
                             span,
-                        })
+                        }, errors)
                     }
                     else {
-                        Err(vec![prolangine::parse::token::Error::expected(#display_name, &token, span.clone())])
+                        errors.push(prolangine::parse::token::Error::expected(#display_name, &token, span.clone()));
+                        prolangine::parse::token::ParseResult::new(Self::fabricate(span), errors)
                     }
                 }
                 fn peek<I>(tokenizer: &I) -> bool
@@ -481,12 +496,7 @@ pub fn create_token_nodes(args: TokenStream, input: TokenStream) -> TokenStream 
                         Self: Sized,
                         I: prolangine::parse::token::TokenIterator<#token_name>
                 {
-                    if let Some(token) = tokenizer.peek() {
-                        matches!(token.as_token(), Some(#token_name::#variant_name #destructure))
-                    }
-                    else {
-                        false
-                    }
+                    matches!(tokenizer.peek().as_token(), Some(#token_name::#variant_name #destructure))
                 }
             }
         });

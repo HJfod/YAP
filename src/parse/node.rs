@@ -1,7 +1,7 @@
 
 use std::fmt::Debug;
 use crate::src::Span;
-use super::token::{Error, ParseResult, Token, TokenIterator, TokenKind};
+use super::token::{Error, Fabricate, ParseResult, Token, TokenIterator, TokenKind};
 
 pub trait NodeKind: Debug {
     /// Get the children of this AST node
@@ -10,7 +10,7 @@ pub trait NodeKind: Debug {
     fn span(&self) -> Span;
 }
 
-pub trait Parse<T: TokenKind>: NodeKind {
+pub trait Parse<T: TokenKind>: NodeKind + Fabricate {
     fn parse<I>(tokenizer: &mut I) -> ParseResult<Self>
         where
             Self: Sized,
@@ -34,44 +34,25 @@ impl<T: TokenKind, I: TokenIterator<T>> Parser<T> for I {
         let mut res = Vec::new();
         let mut errors = Vec::new();
         loop {
-            match self.next() {
-                Ok(token) => {
-                    if token.is_eof() {
-                        break;
-                    }
-                    // If we have ran into any errors, it's pointless to keep collecting 
-                    // up results
-                    if errors.is_empty() {
-                        res.push(token);
-                    }
-                }
-                Err(e) => errors.extend(e),
+            let token = self.next().append_and_get(&mut errors);
+            if token.is_eof() {
+                break;
             }
+            res.push(token);
         }
-        if errors.is_empty() {
-            Ok(res)
-        }
-        else {
-            Err(errors)
-        }
+        ParseResult::new(res, errors)
     }
     fn parse<N: Parse<T>>(&mut self) -> ParseResult<N> {
         N::parse(self)
     }
     fn parse_fully<N: Parse<T>>(mut self) -> ParseResult<N> {
-        let res = N::parse(&mut self);
-        if let Ok(next) = self.next() {
-            if !next.is_eof() {
-                let span = next.span();
-                let mut errors = match res {
-                    Ok(_) => vec![],
-                    Err(e) => e,
-                };
-                errors.push(Error::expected(self.eof_name(), next, span));
-                return Err(errors);
-            }
+        let (res, mut errors) = N::parse(&mut self).into();
+        let next = self.next().append_and_get(&mut errors);
+        if !next.is_eof() {
+            let span = next.span();
+            errors.push(Error::expected(self.eof_name(), next, span));
         }
-        res
+        ParseResult::new(res, errors)
     }
 }
 
@@ -143,13 +124,18 @@ impl<N: NodeKind> NodeKind for Box<N> {
         self.as_ref().span()
     }
 }
+impl<N: Fabricate> Fabricate for Box<N> {
+    fn fabricate(span: Span) -> Self {
+        N::fabricate(span).into()
+    }
+}
 impl<T: TokenKind, N: Parse<T>> Parse<T> for Box<N> {
     fn parse<I>(tokenizer: &mut I) -> ParseResult<Self>
         where
             Self: Sized,
             I: TokenIterator<T>
     {
-        Ok(Box::from(N::parse(tokenizer)?))
+        N::parse(tokenizer).map(Box::from)
     }
     fn peek<I>(tokenizer: &I) -> bool
         where
