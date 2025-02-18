@@ -28,6 +28,8 @@ impl Error {
     }
 }
 
+/// Result type for parsing operations
+/// 
 /// For intellisense, it is important to get some sort of AST out (even if it 
 /// has syntax errors in it) to be able to do type analysis for auto-complete, 
 /// suggestions, etc. For this reason this has to return both the T and the 
@@ -80,13 +82,9 @@ pub trait Fabricate {
 /// The main trait for introducing a custom syntax for a language. The
 /// language's token kind should implement this trait.
 ///
-/// Unrecoverable token parsing errors and EOF are considered tokens
-/// aswell for uniform handling.
-///
-/// The error token type must be able to encode the error message, and the EOF
-/// token type must be able to encode an optional name for the EOF (such as
-/// "closing brace"), since EOF does not necessarily mean end-of-file but can
-/// also mean end-of-subtree
+/// EOF is considered a token. The EOF token type must be able to encode an 
+/// optional name for the EOF (such as "closing brace"), since EOF does not 
+/// necessarily mean end-of-file but can also mean end-of-subtree
 pub trait TokenKind: Debug + Sized + DisplayName + Fabricate {
     /// Get the next token in the source iterator. This method is **not required**
     /// to run [`TokenKind::skip_to_next`]; it may assume that the next token
