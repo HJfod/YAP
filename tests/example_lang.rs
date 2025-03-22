@@ -1,5 +1,5 @@
 use std::path::Path;
-use prolangine_macros::{create_token_nodes, NodeKind, Parse};
+use prolangine_macros::{create_token_nodes, Fabricate, NodeKind, Parse};
 use prolangine::{
     parse::{
         common::{
@@ -21,6 +21,7 @@ fn is_op_char(ch: char) -> bool {
 }
 
 #[create_token_nodes]
+#[derive(Fabricate)]
 pub enum ExampleLanguageToken {
     Number(f64),
     String(String),
@@ -47,14 +48,10 @@ pub enum ExampleLanguageToken {
 
     /// Note: convertible to any other token type
     #[token(display_name = "<invalid token>")]
+    #[fabricate]
     Invalid,
 }
 
-impl Fabricate for ExampleLanguageToken {
-    fn fabricate(_span: Span) -> Self {
-        Self::Invalid
-    }
-}
 impl TokenKind for ExampleLanguageToken {
     fn next(cursor: &mut SrcCursor) -> ParseResult<Token<ExampleLanguageToken>> {
         let start = cursor.pos();
@@ -137,19 +134,14 @@ impl TokenKind for ExampleLanguageToken {
     }
 }
 
-#[derive(Debug, NodeKind, Parse)]
+#[derive(Debug, NodeKind, Parse, Fabricate)]
 #[parse(expected = "operator", token_type = "ExampleLanguageToken")]
 pub enum BinOp {
+    #[fabricate]
     Plus(PlusToken),
     Minus(MinusToken),
     Assign(AssignToken),
     Eq(EqToken),
-}
-
-impl Fabricate for BinOp {
-    fn fabricate(span: Span) -> Self {
-        Self::Plus(PlusToken::fabricate(span))
-    }
 }
 
 impl BinOp {
@@ -183,23 +175,17 @@ impl BinOp {
     }
 }
 
-#[derive(Debug, NodeKind, Parse)]
+#[derive(Debug, NodeKind, Parse, Fabricate)]
 #[parse(expected = "expression", token_type = "ExampleLanguageToken")]
 pub enum AtomExpr {
     Closed(Parenthesized<Box<Expr>>),
     String(StringToken),
     Number(NumberToken),
+    #[fabricate]
     Ident(IdentToken),
 }
 
-// todo: derive impl
-impl Fabricate for AtomExpr {
-    fn fabricate(span: Span) -> Self {
-        Self::Ident(IdentToken::fabricate(span))
-    }
-}
-
-#[derive(Debug, NodeKind)]
+#[derive(Debug, NodeKind, Fabricate)]
 #[parse(expected = "expression", token_type = "ExampleLanguageToken")]
 pub enum UnOp {
     Call {
@@ -207,14 +193,10 @@ pub enum UnOp {
         args: Parenthesized<SeparatedOptTrailing<Expr, CommaToken>>,
         span: Span,
     },
+    #[fabricate]
     Atom(AtomExpr),
 }
 
-impl Fabricate for UnOp {
-    fn fabricate(span: Span) -> Self {
-        Self::Atom(AtomExpr::fabricate(span))
-    }
-}
 impl Parse<ExampleLanguageToken> for UnOp {
     fn parse<I>(tokenizer: &mut I) -> ParseResult<Self>
         where Self: Sized, I: TokenIterator<ExampleLanguageToken>
@@ -242,7 +224,7 @@ impl Parse<ExampleLanguageToken> for UnOp {
     }
 }
 
-#[derive(Debug, NodeKind)]
+#[derive(Debug, NodeKind, Fabricate)]
 #[parse(expected = "expression", token_type = "ExampleLanguageToken")]
 pub enum Expr {
     BinOp {
@@ -251,14 +233,10 @@ pub enum Expr {
         rhs: Box<Expr>,
         span: Span,
     },
+    #[fabricate]
     UnOp(UnOp),
 }
 
-impl Fabricate for Expr {
-    fn fabricate(span: Span) -> Self {
-        Self::UnOp(UnOp::fabricate(span))
-    }
-}
 impl Expr {
     fn parse_with_precedence<I>(tokenizer: &mut I, mut lhs: Self, current_prec: usize) -> ParseResult<Self>
         where I: TokenIterator<ExampleLanguageToken>
@@ -324,20 +302,11 @@ impl Parse<ExampleLanguageToken> for Expr {
     }
 }
 
-#[derive(Debug, NodeKind, Parse)]
+#[derive(Debug, NodeKind, Parse, Fabricate)]
 #[parse(token_type = "ExampleLanguageToken")]
 pub struct ExprList {
     exprs: SeparatedOptTrailing<Expr, SemicolonToken>,
     span: Span,
-}
-
-impl Fabricate for ExprList {
-    fn fabricate(span: Span) -> Self {
-        Self {
-            exprs: Fabricate::fabricate(span.clone()),
-            span,
-        }
-    }
 }
 
 trait DebugEq {

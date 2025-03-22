@@ -313,6 +313,109 @@ pub fn derive_parse_kind(input: TokenStream) -> TokenStream {
     derive_node_kind_or_parse(input, false)
 }
 
+#[derive(FromVariant)]
+#[darling(forward_attrs(fabricate))]
+struct FabricateVariant {
+    ident: syn::Ident,
+    fields: ast::Fields<ParseField>,
+    attrs: Vec<syn::Attribute>,
+}
+
+#[derive(FromDeriveInput)]
+#[darling(attributes(fabricate), supports(any))]
+struct FabricateReceiver {
+    ident: syn::Ident,
+    data: ast::Data<FabricateVariant, ParseField>,
+}
+
+#[proc_macro_derive(Fabricate, attributes(fabricate))]
+pub fn derive_fabricate(input: TokenStream) -> TokenStream {
+    let item = match FabricateReceiver::from_derive_input(&syn::parse(input).expect("Couldn't parse item")) {
+        Ok(v) => v,
+        Err(e) => { return e.write_errors().into(); }
+    };
+
+    let for_item = &item.ident;
+    let mut fabricate_impl = quote! {};
+
+    match item.data {
+        ast::Data::Enum(mut variants) => {
+            let mut fabricate_for: Option<&FabricateVariant> = None;
+            for variant in &mut variants {
+                // This is stupid but i can't figure out how else to get darling to 
+                // handle #[fabricate] and not #[fabricate(fabricate())]
+                if variant.attrs.iter().any(|a| a.meta.path().get_ident() == Some(&format_ident!("fabricate"))) {
+                    if let Some(before) = fabricate_for {
+                        return syn::Error::new(
+                            before.ident.span(),
+                            "#[fabricate] has already been defined on a different variant"
+                        ).to_compile_error().into();
+                    }
+                    fabricate_for = Some(variant);
+                }
+            }
+            let Some(target) = fabricate_for else {
+                return syn::Error::new(
+                    for_item.span(),
+                    "deriving Fabricate on an enum requires specifying #[fabricate] on one variant"
+                ).to_compile_error().into();
+            };
+            let variant = &target.ident;
+            fabricate_impl = match target.fields.style {
+                ast::Style::Tuple => {
+                    let mut imp = quote! {};
+                    for _ in &target.fields.fields {
+                        imp.extend(quote!{ prolangine::parse::token::Fabricate::fabricate(span.clone()), });
+                    }
+                    quote! { Self::#variant (#imp) }
+                }
+                ast::Style::Struct => {
+                    let mut imp = quote! {};
+                    for field in &target.fields.fields {
+                        let name = &field.ident;
+                        imp.extend(quote!{ #name: prolangine::parse::token::Fabricate::fabricate(span.clone()), });
+                    }
+                    quote! { Self::#variant {#imp} }
+                },
+                ast::Style::Unit => quote! { Self::#variant }
+            }
+        }
+        ast::Data::Struct(s) => {
+            if !s.fields.iter().any(|f| f.ident.as_ref().is_some_and(|i| i == "span")) {
+                return syn::Error::new(
+                    for_item.span(),
+                    "Fabricate struct variants must have a `span: Span` field"
+                ).to_compile_error().into();
+            }
+            let mut fabricated_fields = quote! {};
+            for field in s.fields {
+                if field.ident.as_ref().is_some_and(|i| i == "span") {
+                    fabricated_fields.extend(quote! {
+                        span: span.clone(),
+                    });
+                }
+                else {
+                    let ident = field.ident.unwrap();
+                    fabricated_fields.extend(quote! {
+                        #ident: prolangine::parse::token::Fabricate::fabricate(span.clone()),
+                    });
+                }
+            }
+            fabricate_impl = quote! {
+                Self { #fabricated_fields }
+            };
+        }
+    }
+
+    quote! {
+        impl prolangine::parse::token::Fabricate for #for_item {
+            fn fabricate(span: prolangine::src::Span) -> Self {
+                #fabricate_impl
+            }
+        }
+    }.into()
+}
+
 #[derive(FromMeta)]
 struct CreateTokenNodesArgs {}
 
